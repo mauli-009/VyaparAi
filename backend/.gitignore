@@ -1,0 +1,22 @@
+# environment
+venv/
+.env
+
+# python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# vscode
+.vscode/
+
+# logs
+*.log
+
+# build files
+dist/
+build/
+
+# OS files
+.DS_Store

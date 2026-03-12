@@ -1,0 +1,5 @@
+saleDate,total_value,items_sold,zone
+2024-01-01,12000,25,West
+2024-01-02,15000,30,East
+2024-01-03,11000,22,North
+2024-01-04,17000,35,South
