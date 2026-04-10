@@ -8,270 +8,243 @@ from app.repositories.semantic_registry_repo import (
 )
 from app.services.llm_service import call_llm
 import pandas as pd
-import re
 
 
-# ─────────────────────────────────────────────
-# Config
-# ─────────────────────────────────────────────
-FUZZY_THRESHOLD = 75   # token_sort_ratio score to accept a fuzzy match
+# High enough to catch abbreviations like "regn"→"region"
+# but low enough to avoid false matches between similar columns
+SIMILARITY_THRESHOLD = 80
+
+# These generic keys are BANNED from registry
+# They caused Total Cost / Total Profit to all map to "revenue"
+BANNED_GENERIC_KEYS = {"revenue", "expense", "profit", "loss", "price", "cost", "amount"}
 
 
-# ─────────────────────────────────────────────
-# Normalize
-# "product_name" / "Product Name" / "product-name" → "product name"
-# ─────────────────────────────────────────────
-def normalize(text: str) -> str:
-    text = text.lower().strip()
-    text = re.sub(r"[_\-]+", " ", text)
-    text = re.sub(r"\s+", " ", text)
-    return text
+def normalize(text: str):
+    return text.lower().strip()
 
 
-# ─────────────────────────────────────────────
-# Step 1 — Exact alias match
-# Fastest path. Hits if column was seen before.
-# ─────────────────────────────────────────────
+# ---------------------------
+# Exact alias match
+# ---------------------------
 def exact_match(column_name: str):
-    entry = find_by_alias(normalize(column_name))
+    alias = normalize(column_name)
+    entry = find_by_alias(alias)
     if entry:
         return entry["key"]
     return None
 
 
-# ─────────────────────────────────────────────
-# Step 2 — Fuzzy match
-# Scores against BOTH aliases AND the key itself.
-# Scoring against the key is a safety net for sparse registry entries
-# that have very few aliases yet — the key name is often the best
-# descriptive string to match against in that case.
-# e.g. new entry "battery_capacity" with only 1 alias:
-#      "bat cap" vs alias "battery capacity" → 58 ❌
-#      "bat cap" vs key   "battery capacity" → 58 (same, but ensures it's checked)
-# ─────────────────────────────────────────────
-def fuzzy_match(column_name: str, registry: list):
+# ---------------------------
+# Fuzzy match against aliases
+# ---------------------------
+def fuzzy_match(column_name: str):
+    registry = get_all_registry()
     best_score = 0
     best_key = None
 
     for entry in registry:
-        key = entry["key"]
-        normalized_col = normalize(column_name)
+        # Skip banned generic keys during fuzzy match
+        if entry.get("key") in BANNED_GENERIC_KEYS:
+            continue
 
-        # score against the key itself first (safety net for sparse entries)
-        key_score = fuzz.token_sort_ratio(normalized_col, normalize(key))
-        if key_score > best_score:
-            best_score = key_score
-            best_key = key
-
-        # score against every alias
         for alias in entry.get("aliases", []):
-            score = fuzz.token_sort_ratio(normalized_col, normalize(alias))
+            score = fuzz.ratio(
+                normalize(column_name),
+                normalize(alias)
+            )
             if score > best_score:
                 best_score = score
-                best_key = key
+                best_key = entry["key"]
 
-    if best_score >= FUZZY_THRESHOLD:
-        return best_key, best_score
+    if best_score >= SIMILARITY_THRESHOLD:
+        return best_key
 
-    return None, best_score
-
-
-# ─────────────────────────────────────────────
-# Top unique candidate keys for LLM context
-# Scores against BOTH key and aliases, deduped per key
-# ─────────────────────────────────────────────
-def get_top_candidates(column_name: str, registry: list) -> list:
-    scores = {}  # key → best score across key name + all aliases
-
-    for entry in registry:
-        key = entry["key"]
-        normalized_col = normalize(column_name)
-
-        # score against the key itself
-        key_score = fuzz.token_sort_ratio(normalized_col, normalize(key))
-        scores[key] = key_score
-
-        # score against every alias, keep highest
-        for alias in entry.get("aliases", []):
-            score = fuzz.token_sort_ratio(normalized_col, normalize(alias))
-            if score > scores[key]:
-                scores[key] = score
-
-    sorted_keys = sorted(scores.items(), key=lambda x: x[1], reverse=True)
-    return [k for k, _ in sorted_keys[:5]]
+    return None
 
 
-# ─────────────────────────────────────────────
+# ---------------------------
 # Data type inference
-# ─────────────────────────────────────────────
-def infer_data_type(series: pd.Series) -> str:
+# ---------------------------
+def infer_data_type(series):
     if pd.api.types.is_numeric_dtype(series):
         return "numeric"
     if pd.api.types.is_datetime64_any_dtype(series):
         return "date"
-    # detect date-like strings
-    sample = series.dropna().astype(str).head(10).tolist()
-    for val in sample:
-        if re.search(r"\d{4}-\d{2}-\d{2}|\d{2}/\d{2}/\d{4}", val):
-            return "date"
     return "categorical"
 
 
-# ─────────────────────────────────────────────
-# Step 3 — LLM disambiguation
-#
-# KEY DESIGN: sample values are the primary signal.
-# The LLM sees actual data (e.g. ["Portronics Konnect", "boAt Rockerz"])
-# so it can correctly resolve ambiguous/abbreviated column names
-# WITHOUT any hardcoded abbreviation maps.
-#
-# e.g. column "pr_name" with values ["Portronics Konnect", "boAt Rockerz"]
-#      → LLM correctly returns {"key": "product_name"}
-# ─────────────────────────────────────────────
-def llm_disambiguation(
-    column_name: str,
-    preview_values: list,
-    candidates: list,
-    data_type: str,
-    all_keys: list
-):
+# ---------------------------
+# Batch LLM mapping — all columns at once
+# ---------------------------
+def llm_batch_mapping(columns_info: list) -> dict:
+    columns_block = ""
+    for item in columns_info:
+        columns_block += f"""
+  - Column: "{item['column_name']}"
+    Type: {item['dtype']}
+    Sample values: {item['sample_values'][:5]}
+"""
+
     prompt = f"""
-You are a dataset schema analyst. Your job is to map a raw CSV column to the correct semantic key.
+You are a dataset schema analyzer. Map each column to a unique semantic key.
 
-COLUMN NAME: "{column_name}"
-DATA TYPE: {data_type}
-SAMPLE VALUES (most important signal — use these to understand what the column actually contains):
-{preview_values[:8]}
+Columns to map:
+{columns_block}
 
-TOP FUZZY CANDIDATE KEYS (use as a starting point):
-{candidates}
+STRICT RULES:
 
-ALL AVAILABLE SEMANTIC KEYS (use if candidates don't fit):
-{all_keys}
+1. Every column MUST get a UNIQUE semantic key. No two columns can share the same key.
 
-INSTRUCTIONS:
-- The sample values are your most important clue. Use them first.
-- If sample values look like product/item names → pick "product_name"
-- If sample values look like descriptions/long text → pick "product_description"
-- If sample values look like prices (numbers) → pick "discounted_price_numeric" or "actual_price_numeric"
-- If sample values look like dates → pick "transaction_date"
-- If sample values look like category names → pick "category"
-- If sample values look like usernames/people names → pick "user_name"
-- If sample values look like IDs/codes → pick "user_id" or "product_id"
-- If sample values look like review/feedback text → pick "review_text"
-- If sample values look like URLs/links → pick "product_link"
-- Only use "create_new" if the column represents something genuinely not covered
-  by ANY key in the full keys list above.
+2. Derive the key directly from the column name using snake_case.
+   Examples:
+   - "Total Revenue"   → "total_revenue"
+   - "Total Cost"      → "total_cost"
+   - "Total Profit"    → "total_profit"
+   - "Order Date"      → "transaction_date"
+   - "Ship Date"       → "ship_date"
+   - "Order ID"        → "order_id"
+   - "Units Sold"      → "units_sold"
+   - "Unit Price"      → "unit_price"
+   - "Unit Cost"       → "unit_cost"
+   - "Sales Channel"   → "sales_channel"
+   - "Order Priority"  → "order_priority"
+   - "Item Type"       → "item_type"
+   - "Region"          → "region"
+   - "Country"         → "country"
 
-Return JSON only. No markdown. No explanation.
+3. NEVER use generic keys like "revenue", "cost", "profit", "price", "expense", "amount".
+   Always use the FULL specific snake_case key from the column name.
+   - "Total Revenue" → "total_revenue"   NOT "revenue"
+   - "Total Cost"    → "total_cost"      NOT "cost"
+   - "Total Profit"  → "total_profit"    NOT "profit"
+   - "Unit Price"    → "unit_price"      NOT "price"
+   - "Unit Cost"     → "unit_cost"       NOT "cost"
 
-Option 1 — map to existing key:
-{{"key": "<existing_key_from_all_keys>"}}
+4. Exception — only use a shared/generic key if there is truly ONLY ONE column of that type
+   and its name is generic (e.g. a column literally named "Revenue" with no prefix):
+   - Single date column → "transaction_date"
+   - Single region column → "region"
+   - Single quantity column → "quantity"
 
-Option 2 — create new key (only if truly nothing fits):
-{{"action": "create_new", "key": "<snake_case_key>", "description": "<one sentence describing what this column represents>", "data_type": "numeric | categorical | date"}}
+5. NEVER assign the same key to two different columns.
+
+6. Return a flat JSON object. JSON only. No markdown. No explanation.
+
+Example output:
+{{
+  "Region": "region",
+  "Country": "country",
+  "Item Type": "item_type",
+  "Sales Channel": "sales_channel",
+  "Order Priority": "order_priority",
+  "Order Date": "transaction_date",
+  "Order ID": "order_id",
+  "Ship Date": "ship_date",
+  "Units Sold": "units_sold",
+  "Unit Price": "unit_price",
+  "Unit Cost": "unit_cost",
+  "Total Revenue": "total_revenue",
+  "Total Cost": "total_cost",
+  "Total Profit": "total_profit"
+}}
 """
 
     return call_llm(prompt)
 
 
-# ─────────────────────────────────────────────
-# Safe insert — prevents duplicate keys
-# If key already exists → just add new alias
-# If key is new → create full entry
-# ─────────────────────────────────────────────
-def safe_insert(new_key: str, column_name: str, description: str, data_type: str):
-    existing = find_by_key(new_key)
+# ---------------------------
+# Registry learning
+# ---------------------------
+def learn(column: str, key: str, series: pd.Series):
+    """
+    If key already exists in registry → add column name as alias.
+    If key does not exist → create a new registry entry.
+    Never creates a duplicate document.
+    Never stores banned generic keys.
+    """
+    # Don't pollute registry with generic keys
+    if key in BANNED_GENERIC_KEYS:
+        return
+
+    alias = normalize(column)
+    existing = find_by_key(key)
+
     if existing:
-        add_alias_to_key(new_key, normalize(column_name))
+        # Key exists — add alias if not already present
+        if alias not in [a.lower().strip() for a in existing.get("aliases", [])]:
+            add_alias_to_key(key, alias)
     else:
+        # Brand new key — insert fresh entry
         insert_registry_entry(
-            key=new_key,
-            aliases=[normalize(column_name)],
-            description=description,
-            data_type=data_type
+            key,
+            [alias],
+            f"Auto-mapped from column: {column}",
+            infer_data_type(series)
         )
 
 
-# ─────────────────────────────────────────────
-# Main mapping pipeline
-#
-# For each column:
-#   1. Exact match   → free, instant, deterministic
-#   2. Fuzzy match   → free, handles small variations
-#   3. LLM           → handles abbreviations + semantics using sample values
-#
-# Feedback loop: every successful match saves the column as an alias
-# so the next dataset with the same column hits exact match instantly.
-# ─────────────────────────────────────────────
-def generate_mapping(df: pd.DataFrame) -> dict:
+# ---------------------------
+# Main mapping function
+# ---------------------------
+def generate_mapping(df: pd.DataFrame):
 
-    mapping = {}
-    registry = get_all_registry()
-    all_keys = list({entry["key"] for entry in registry})
+    used_keys = []
+    final_mapping = {}
+
+    # --- Phase 1: exact + fuzzy match from registry (fast, no LLM) ---
+    unresolved_columns = []
 
     for column in df.columns:
 
-        # ── Step 1: Exact alias match ──────────────────────────────────
+        # 1. Exact alias match
         key = exact_match(column)
-        if key:
-            mapping[column] = key
+        if key and key not in used_keys:
+            final_mapping[column] = key
+            used_keys.append(key)
+            learn(column, key, df[column])
             continue
 
-        # ── Step 2: Fuzzy match ────────────────────────────────────────
-        key, best_score = fuzzy_match(column, registry)
-        if key:
-            mapping[column] = key
-            # Feedback loop — save alias so next time hits Step 1
-            add_alias_to_key(key, normalize(column))
+        # 2. Fuzzy match
+        key = fuzzy_match(column)
+        if key and key not in used_keys:
+            final_mapping[column] = key
+            used_keys.append(key)
+            learn(column, key, df[column])
             continue
 
-        # ── Step 3: LLM with sample values ────────────────────────────
-        preview_values = df[column].dropna().tolist()
-        data_type = infer_data_type(df[column])
-        candidate_keys = get_top_candidates(column, registry)
+        # Could not resolve — send to LLM
+        unresolved_columns.append(column)
 
-        response = llm_disambiguation(
-            column_name=column,
-            preview_values=preview_values,
-            candidates=candidate_keys,
-            data_type=data_type,
-            all_keys=all_keys
-        )
+    # --- Phase 2: batch LLM for unresolved columns only ---
+    if unresolved_columns:
 
-        if not isinstance(response, dict):
-            # LLM returned garbage — use best fuzzy candidate
-            mapping[column] = candidate_keys[0] if candidate_keys else "unknown"
-            continue
+        columns_info = [
+            {
+                "column_name": col,
+                "sample_values": df[col].dropna().tolist(),
+                "dtype": str(df[col].dtype)
+            }
+            for col in unresolved_columns
+        ]
 
-        # LLM picked an existing key
-        if "key" in response:
-            chosen_key = response["key"]
+        llm_mapping = llm_batch_mapping(columns_info)
 
-            if chosen_key in all_keys:
-                mapping[column] = chosen_key
-                # Feedback loop — save alias so next time hits Step 1
-                add_alias_to_key(chosen_key, normalize(column))
-            else:
-                # LLM hallucinated a key that doesn't exist
-                # Fall back to best fuzzy candidate
-                mapping[column] = candidate_keys[0] if candidate_keys else "unknown"
+        if not isinstance(llm_mapping, dict):
+            llm_mapping = {}
 
-        # LLM wants to create a brand new key
-        elif response.get("action") == "create_new":
-            new_key = normalize(response.get("key", column)).replace(" ", "_")
-            description = response.get("description", "")
-            inferred_type = response.get("data_type", data_type)
+        for column in unresolved_columns:
+            key = llm_mapping.get(column)
 
-            safe_insert(new_key, column, description, inferred_type)
-            mapping[column] = new_key
+            # Safety: if LLM gave a duplicate or nothing, fall back to snake_case
+            if not key or key in used_keys:
+                key = normalize(column).replace(" ", "_")
+                if key in used_keys:
+                    key = f"{key}_{len(used_keys)}"
 
-            # Update local state so later columns in this same CSV
-            # can match against this newly created key without a DB round trip
-            all_keys.append(new_key)
-            registry.append({"key": new_key, "aliases": [normalize(column)]})
+            final_mapping[column] = key
+            used_keys.append(key)
 
-        else:
-            mapping[column] = candidate_keys[0] if candidate_keys else "unknown"
+            # Learn: add alias to existing key OR create new entry
+            learn(column, key, df[column])
 
-    return mapping
+    return final_mapping

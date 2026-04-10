@@ -1,3 +1,6 @@
+/*!*****************************************************************************************************************************************************************************************************************************************************************!*\
+  !*** css ./node_modules/next/dist/build/webpack/loaders/css-loader/src/index.js??ruleSet[1].rules[13].oneOf[12].use[2]!./node_modules/next/dist/build/webpack/loaders/postcss-loader/src/index.js??ruleSet[1].rules[13].oneOf[12].use[3]!./src/app/globals.css ***!
+  \*****************************************************************************************************************************************************************************************************************************************************************/
 @import url('https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;1,9..40,300&display=swap');
 
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -104,7 +107,7 @@ html, body {
 }
 
 .sidebar-body {
-  flex: 1;
+  flex: 1 1;
   overflow-y: auto;
   padding: 16px;
   display: flex;
@@ -205,7 +208,7 @@ html, body {
   flex-shrink: 0;
 }
 
-.file-card-info { flex: 1; min-width: 0; }
+.file-card-info { flex: 1 1; min-width: 0; }
 
 .file-card-name {
   font-size: 12.5px;
@@ -265,7 +268,7 @@ html, body {
   padding: 2px 6px;
   border-radius: 4px;
   border: 1px solid var(--border);
-  flex: 1;
+  flex: 1 1;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -281,7 +284,7 @@ html, body {
   padding: 2px 6px;
   border-radius: 4px;
   border: 1px solid #d0ddfa;
-  flex: 1;
+  flex: 1 1;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -365,7 +368,7 @@ html, body {
    MAIN CHAT AREA
 ════════════════════════════════════════════ */
 .main-area {
-  flex: 1;
+  flex: 1 1;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -373,7 +376,7 @@ html, body {
 }
 
 .chat-container {
-  flex: 1;
+  flex: 1 1;
   display: flex;
   flex-direction: column;
   height: 100%;
@@ -381,7 +384,7 @@ html, body {
 
 /* ─── Empty State ─── */
 .empty-state {
-  flex: 1;
+  flex: 1 1;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -447,7 +450,7 @@ html, body {
 
 /* ─── Messages ─── */
 .messages-area {
-  flex: 1;
+  flex: 1 1;
   overflow-y: auto;
   padding: 28px 32px;
   display: flex;
@@ -594,7 +597,7 @@ html, body {
 }
 
 .input-wrapper textarea {
-  flex: 1;
+  flex: 1 1;
   background: transparent;
   border: none;
   outline: none;
@@ -716,6 +719,7 @@ html, body {
 
 .td-value {
   font-weight: 600;
+  font-feature-settings: "tnum";
   font-variant-numeric: tabular-nums;
   text-align: right;
   color: var(--text-primary);
@@ -929,7 +933,7 @@ html, body {
 }
 
 .suggestion-title-row {
-  flex: 1;
+  flex: 1 1;
   display: flex;
   flex-direction: column;
   gap: 5px;
@@ -1032,7 +1036,7 @@ html, body {
   flex-shrink: 0;
 }
 
-.rec-product-info { flex: 1; min-width: 0; }
+.rec-product-info { flex: 1 1; min-width: 0; }
 
 .rec-product-name-row {
   display: flex;
@@ -1067,7 +1071,7 @@ html, body {
 }
 
 .score-bar-track {
-  flex: 1;
+  flex: 1 1;
   height: 6px;
   background: var(--border);
   border-radius: 3px;
@@ -1084,6 +1088,7 @@ html, body {
   font-size: 11px;
   font-weight: 700;
   color: var(--text-muted);
+  font-feature-settings: "tnum";
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
   min-width: 44px;
