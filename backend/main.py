@@ -7,15 +7,21 @@ from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI()
 
-# Get the frontend URL from environment variables, fallback to localhost for dev
 frontend_url = os.getenv("FRONTEND_URL", "http://localhost:3000")
+
+allowed_origins = [
+    frontend_url,
+    "http://localhost:3000",
+    "http://localhost:5173",
+]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[frontend_url], # This will now accept your Vercel link
+    allow_origins=allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    allow_origin_regex=r"https://.*\.vercel\.app",  # ✅ allows all vercel preview URLs
 )
 
 app.include_router(upload_router)
