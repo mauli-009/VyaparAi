@@ -10,8 +10,8 @@ DB_NAME = os.getenv("DB_NAME")
 client = MongoClient(MONGO_URI)
 db = client[DB_NAME]
 
-# Collection A
+# Collections
 datasets_collection = db["datasets"]
-
-# Collection B
 semantic_registry_collection = db["semantic_registry"]
+users_collection = db["users"]
+history_collection = db["history"]  # ← explicitly defined

@@ -1,50 +1,56 @@
-# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+# =========================
+# Dependencies
+# =========================
+node_modules/
+frontend/node_modules/
 
-# dependencies
-/node_modules
-/.pnp
-.pnp.*
-.yarn/*
-!.yarn/patches
-!.yarn/plugins
-!.yarn/releases
-!.yarn/versions
+# =========================
+# Next.js build files
+# =========================
+frontend/.next/
+frontend/out/
 
-# testing
-/coverage
+# Ignore pack files (important for your case)
+*.pack.gz
 
-# next.js
-/.next/
-/out/
+# =========================
+# Build outputs
+# =========================
+dist/
+build/
+frontend/dist/
+frontend/build/
 
-# production
-/build
-
-# misc
-.DS_Store
-*.pem
-
-# debug
+# =========================
+# Logs
+# =========================
+logs/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
 
-# env files (can opt-in for committing if needed)
-.env*
+# =========================
+# Env files
+# =========================
+.env
+.env.*
+frontend/.env*
+backend/.env*
 
-# vercel
-.vercel
+# =========================
+# Misc
+# =========================
+.DS_Store
+*.pem
 
-# typescript
+# =========================
+# TypeScript
+# =========================
 *.tsbuildinfo
 next-env.d.ts
 
-
-node_modules/
-.env
-.env.*
-dist/
-build/
-logs/
-npm-debug.log*
+# =========================
+# Vercel
+# =========================
+.vercel

@@ -1,10 +1,15 @@
 from app.services.llm_service import call_llm
 
-SUPPORTED_METRICS = ["sum", "avg", "count"]
-
 SUPPORTED_OPERATORS = [
     "equals", "not_equals", "greater_than", "less_than",
-    "greater_or_equal", "less_or_equal", "between"
+    "greater_or_equal", "less_or_equal", "between",
+    "==", "!=", ">", "<", ">=", "<=", "in"
+]
+
+# Updated with common typos to ensure metadata fast-path works
+METADATA_KEYWORDS = [
+    "columns", "colums", "coloum", "column names", "fields", "schema", "headers", 
+    "structure", "data types", "what data is in"
 ]
 
 SUGGESTION_KEYWORDS = [
@@ -27,65 +32,83 @@ AGGREGATION_KEYWORDS = [
     "revenue", "profit", "sales", "units", "cost"
 ]
 
+LIST_KEYWORDS = [
+    "list", "show me all", "show all", "find all", "details of",
+    "give me all", "fetch", "which rows", "all records", "all products", "links"
+]
 
-def detect_query_type(question: str) -> str:
+def detect_action(question: str) -> str | None:
     """
-    Returns:
-    - "aggregation"    → user wants a number/table
-    - "suggestion"     → user wants general advice
-    - "recommendation" → user wants product/category ranking with reasons
-    - "both"           → user wants number + suggestions
+    Returns the core action or None if unsure.
     """
     q = question.lower().strip()
 
-    is_recommendation = any(kw in q for kw in RECOMMENDATION_KEYWORDS)
-    is_suggestion = any(kw in q for kw in SUGGESTION_KEYWORDS)
-    is_aggregation = any(kw in q for kw in AGGREGATION_KEYWORDS)
-
-    if is_recommendation:
-        return "recommendation"
-    if is_suggestion and is_aggregation:
-        return "both"
-    if is_suggestion:
-        return "suggestion"
-    return "aggregation"
-
+    if any(kw in q for kw in METADATA_KEYWORDS): return "metadata"
+    if any(kw in q for kw in RECOMMENDATION_KEYWORDS): return "recommend"
+    if any(kw in q for kw in SUGGESTION_KEYWORDS): return "suggest"
+    if any(kw in q for kw in LIST_KEYWORDS) and not any(kw in q for kw in AGGREGATION_KEYWORDS): return "list"
+    if any(kw in q for kw in AGGREGATION_KEYWORDS): return "aggregate"
+        
+    return None
 
 def extract_intent(question: str, semantic_mapping: dict, column_values: dict = {}) -> dict:
     semantic_fields = list(set(semantic_mapping.values()))
 
+    # 1. Fast Path for Metadata
+    heuristic_action = detect_action(question)
+    if heuristic_action == "metadata":
+        return {
+            "action": "metadata",
+            "select": ["*"],
+            "filters": [],
+            "group_by": None,
+            "sort_by": None,
+            "order": "desc",
+            "limit": 10
+        }
+
+    # 2. Prepare dynamic values
     values_section = ""
     if column_values:
-        values_section = "\nActual values present in each categorical field (use EXACTLY one of these as filter values):\n"
+        values_section = "\nActual values present in categorical fields (use EXACTLY one of these as filter values):\n"
         for field, vals in column_values.items():
             values_section += f'  "{field}": {vals}\n'
 
+    # 3. Universal Schema Prompt
+    # 3. Universal Schema Prompt
     prompt = f"""
-You are an analytics intent extractor.
-
-User question:
-"{question}"
-
-Available semantic fields:
-{semantic_fields}
+You are an advanced data query router.
+User question: "{question}"
+Available columns: {semantic_fields}
 {values_section}
-Supported metrics: {SUPPORTED_METRICS}
 Supported operators: {SUPPORTED_OPERATORS}
 
-Convert the user question into structured analytics intent.
+You must convert the user's question into this EXACT JSON structure. Do NOT change the keys.
 
-Return JSON:
 {{
-  "metric": "sum | avg | count",
-  "field": "<semantic_field>",
-  "group_by": "month(transaction_date)" or null,
-  "filters": []
+  "action": "aggregate" | "list" | "metadata" | "suggest" | "recommend",
+  "select": ["column_name_1"],
+  "metric": "sum | avg | count", 
+  "field": "column_name",
+  "filters": [ {{"field": "column_name", "operator": "==", "value": "xyz"}} ],
+  "group_by": "column_name" or null,
+  "sort_by": "column_name" or null,
+  "order": "desc" | "asc",
+  "limit": 10,
+  "suggested_charts": []
 }}
 
-RULES:
-1. "field" MUST be one of the available semantic fields.
-2. Filter values MUST be copied EXACTLY from the actual values list above.
-3. JSON only. No markdown. No explanation.
+RULES FOR CHARTS & GROUPING:
+- Valid chart types: "bar_chart", "pie_chart", "line_chart", "scatter_chart".
+- CRITICAL: NEVER use continuous numerical columns (like price, rating) for "group_by". "group_by" MUST be categorical.
+- EXPLICIT OVERRIDE: If the user explicitly asks for a specific chart type (e.g., "using a line chart"), you MUST put that exact chart type in "suggested_charts" to respect their wish.
+- If the user compares TWO NUMERICAL fields (e.g., "rating vs price"):
+    1. Set "action" to "list".
+    2. Put both column names in the "select" array (e.g., ["price", "rating"]).
+    3. Set "limit" to 100.
+    4. DEFAULT: Put "scatter_chart" in "suggested_charts".
+    5. OVERRIDE: If they asked for a "line chart", use "line_chart" INSTEAD, and you MUST set "sort_by" to the first column in "asc" order (otherwise the line will look like spaghetti).
+- If the user asks for a visualization but DOES NOT specify columns, set "action" to "suggest" and leave "suggested_charts" empty [].
 """
 
     intent = call_llm(prompt)
@@ -93,16 +116,57 @@ RULES:
     if not isinstance(intent, dict):
         raise ValueError(f"Intent extraction returned non-dict: {intent}")
 
-    intent.setdefault("metric", "count")
-    intent.setdefault("field", semantic_fields[0] if semantic_fields else "unknown")
-    intent.setdefault("group_by", None)
+    # 4. Smart Merging Logic
+    llm_action = intent.get("action")
+
+    if heuristic_action == "metadata":
+        final_action = "metadata"
+    elif heuristic_action == "list" and llm_action == "aggregate":
+        final_action = "list"
+    else:
+        final_action = llm_action or heuristic_action or "aggregate"
+
+    intent["action"] = final_action
+
+    # 5. Backward Compatibility Safety Net
+    if final_action == "aggregate":
+        metric = intent.get("metric")
+        field = intent.get("field")
+        
+        # Extract from select array (e.g. "avg(rating)") if LLM forgot
+        select_fields = intent.get("select", [])
+        if select_fields and isinstance(select_fields[0], str) and "(" in select_fields[0]:
+            try:
+                parsed_metric = select_fields[0].split("(")[0].strip().lower()
+                parsed_field = select_fields[0].split("(")[1].replace(")", "").strip()
+                
+                if not metric or str(metric).lower() == "none": metric = parsed_metric
+                if not field or str(field).lower() == "none": field = parsed_field
+            except Exception:
+                pass
+
+        # Final sanitization
+        if not metric or str(metric).lower() == "none": 
+            metric = "count"
+        if not field or str(field).lower() == "none" or field == "*": 
+            field = semantic_fields[0] if semantic_fields else "unknown"
+
+        # Fuzzy match the field to guarantee it exists in mapping
+        clean_field = str(field).lower().replace(" ", "").replace("_", "")
+        matched_field = None
+        for sf in semantic_fields:
+            if str(sf).lower().replace(" ", "").replace("_", "") == clean_field:
+                matched_field = sf
+                break
+
+        intent["metric"] = metric
+        intent["field"] = matched_field or field
+
+    intent.setdefault("select", ["*"])
+    if not isinstance(intent.get("select"), list):
+        intent["select"] = ["*"]
+        
     intent.setdefault("filters", [])
-
-    fallback_map = {"revenue": "price", "sales": "price", "amount": "price"}
-    if intent["field"] not in semantic_fields:
-        if intent["field"] in fallback_map and fallback_map[intent["field"]] in semantic_fields:
-            intent["field"] = fallback_map[intent["field"]]
-
-    intent["query_type"] = detect_query_type(question)
+    intent.setdefault("limit", 15)
 
     return intent

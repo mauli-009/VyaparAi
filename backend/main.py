@@ -3,6 +3,7 @@ from fastapi import FastAPI
 from app.routes.upload import router as upload_router
 from app.routes.mapping import router as mapping_router
 from app.routes.query import router as query_router
+from app.routes.auth import router as auth_router
 from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI()
@@ -21,12 +22,13 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
-    allow_origin_regex=r"https://.*\.vercel\.app",  # ✅ allows all vercel preview URLs
+    allow_origin_regex=r"https://.*\.vercel\.app",
 )
 
 app.include_router(upload_router)
 app.include_router(mapping_router)
 app.include_router(query_router)
+app.include_router(auth_router, prefix="/auth")  # ✅ was missing entirely
 
 @app.get("/")
 def root():
