@@ -251,6 +251,7 @@ export default function Sidebar({
                 ref={inputRef}
                 type="file"
                 accept=".csv"
+                style={{ display: "none" }}
                 onChange={(e) => {
                   if (!token) {
                     setShowAuthModal(true);

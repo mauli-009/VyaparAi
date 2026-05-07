@@ -5,7 +5,7 @@ from app.services.llm_service import call_llm_text
 # ─────────────────────────────────────────────
 # General business suggestions (for "both" / "suggestion" queries)
 # ─────────────────────────────────────────────
-def generate_suggestions(question: str, intent: dict, result: dict) -> list:
+def generate_suggestions(question: str, intent: dict, result: dict, language: str = "English", complexity: str = "Executive") -> list:
     results = result.get("results", [])
     if not results:
         return []
@@ -15,12 +15,18 @@ def generate_suggestions(question: str, intent: dict, result: dict) -> list:
     metric = intent.get("metric", "")
 
     prompt = f"""
-You are a senior business strategist with 15 years of experience.
+You are a senior business strategist.
 
 User asked: "{question}"
 Metric: {metric} of {field}
 Data:
 {result_summary}
+
+LANGUAGE & COMPLEXITY SETTINGS:
+- Output Language: {language}
+- Explanation Style: {complexity}
+- CRITICAL RULE: If the style is "Simple", DO NOT omit any details, metrics, or numbers. You must explain the exact same data using easier-to-understand terms and analogies.
+- CRITICAL RULE 2: Ensure ALL JSON keys remain exactly as written below in English. ONLY translate the content values.
 
 Generate exactly 3 business suggestions. Each must be:
 - Based directly on the actual numbers
@@ -63,7 +69,9 @@ JSON only. No markdown.
 def generate_product_recommendation(
     question: str,
     file_path: str,
-    semantic_mapping: dict
+    semantic_mapping: dict,
+    language: str = "English",
+    complexity: str = "Executive",
 ) -> dict:
     """
     Reads the actual CSV, computes per-product metrics,
@@ -138,6 +146,15 @@ def generate_product_recommendation(
 
     prompt = f"""
 You are a senior business analyst. A user asked: "{question}"
+
+Here are the top products ranked by a composite score (revenue + profit + units + orders):
+{products_text}
+
+LANGUAGE & COMPLEXITY SETTINGS:
+- Output Language: {language}
+- Explanation Style: {complexity}
+- CRITICAL RULE: If the style is "Simple", DO NOT omit any details, metrics, or numbers. You must explain the exact same data using easier-to-understand terms and analogies.
+- CRITICAL RULE 2: Ensure ALL JSON keys remain exactly as written below in English. ONLY translate the content values.
 
 Here are the top products ranked by a composite score (revenue + profit + units + orders):
 {products_text}

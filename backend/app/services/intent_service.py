@@ -1,4 +1,4 @@
-from app.services.llm_service import call_llm
+from app.services.llm_service import FAST_ROUTER_MODEL, call_llm
 
 SUPPORTED_OPERATORS = [
     "equals", "not_equals", "greater_than", "less_than",
@@ -51,7 +51,7 @@ def detect_action(question: str) -> str | None:
         
     return None
 
-def extract_intent(question: str, semantic_mapping: dict, column_values: dict = {}) -> dict:
+def extract_intent(question: str, semantic_mapping: dict, column_values: dict = {}, chat_history: str = "") -> dict:
     semantic_fields = list(set(semantic_mapping.values()))
 
     # 1. Fast Path for Metadata
@@ -79,6 +79,10 @@ def extract_intent(question: str, semantic_mapping: dict, column_values: dict = 
     prompt = f"""
 You are an advanced data query router.
 User question: "{question}"
+
+Recent Chat History Context:
+{chat_history}
+
 Available columns: {semantic_fields}
 {values_section}
 Supported operators: {SUPPORTED_OPERATORS}
@@ -101,17 +105,11 @@ You must convert the user's question into this EXACT JSON structure. Do NOT chan
 RULES FOR CHARTS & GROUPING:
 - Valid chart types: "bar_chart", "pie_chart", "line_chart", "scatter_chart".
 - CRITICAL: NEVER use continuous numerical columns (like price, rating) for "group_by". "group_by" MUST be categorical.
-- EXPLICIT OVERRIDE: If the user explicitly asks for a specific chart type (e.g., "using a line chart"), you MUST put that exact chart type in "suggested_charts" to respect their wish.
-- If the user compares TWO NUMERICAL fields (e.g., "rating vs price"):
-    1. Set "action" to "list".
-    2. Put both column names in the "select" array (e.g., ["price", "rating"]).
-    3. Set "limit" to 100.
-    4. DEFAULT: Put "scatter_chart" in "suggested_charts".
-    5. OVERRIDE: If they asked for a "line chart", use "line_chart" INSTEAD, and you MUST set "sort_by" to the first column in "asc" order (otherwise the line will look like spaghetti).
-- If the user asks for a visualization but DOES NOT specify columns, set "action" to "suggest" and leave "suggested_charts" empty [].
+- CONVERSATIONAL MEMORY: If the user asks a follow-up question (e.g., "What about Houston?"), you MUST KEEP the same "action", "metric", and "field" from the 'Recent Chat History' and ONLY update the "filters". Do NOT switch to "list" unless explicitly asked.
+- EXPLICIT OVERRIDE: If the user explicitly asks for a specific chart type...
 """
 
-    intent = call_llm(prompt)
+    intent = call_llm(prompt, model=FAST_ROUTER_MODEL)
 
     if not isinstance(intent, dict):
         raise ValueError(f"Intent extraction returned non-dict: {intent}")

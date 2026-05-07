@@ -1,7 +1,6 @@
-from app.db.database import db
+from app.db.database import history_collection
 from datetime import datetime
 
-history_collection = db["history"]
 
 def save_history_entry(user_id: str, file_id: str, chat_id: str, question: str, response: dict):
     try:

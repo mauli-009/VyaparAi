@@ -49,6 +49,17 @@ def apply_filters(df: pd.DataFrame, filters: list, reverse_mapping: dict) -> pd.
         operator = f.get("operator")
         value    = f.get("value")
 
+        op_map = {
+            "==": "equals",
+            "=": "equals",
+            "!=": "not_equals",
+            ">": "greater_than",
+            "<": "less_than",
+            ">=": "greater_or_equal",
+            "<=": "less_or_equal"
+        }
+        operator = op_map.get(operator.lower(), operator.lower())
+
         if field not in reverse_mapping:
             continue
 

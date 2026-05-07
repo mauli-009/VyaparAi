@@ -44,6 +44,9 @@ export default function QueryChat({ fileId, chatId, onChatStarted, onQueryDone }
   const [loading, setLoading] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const isNewChatRef = useRef(false);
+  const [language, setLanguage] = useState("English");
+  const [complexity, setComplexity] = useState("Simple (Explain like I'm 5)");
 
   // Auto scroll
   useEffect(() => {
@@ -56,6 +59,13 @@ export default function QueryChat({ fileId, chatId, onChatStarted, onQueryDone }
       setMessages([]);
       return;
     }
+
+    if (isNewChatRef.current) {
+      isNewChatRef.current = false;
+      return; 
+    }
+
+    setMessages([]);
 
     async function loadPastChat() {
       const token = localStorage.getItem("token");
@@ -111,6 +121,7 @@ export default function QueryChat({ fileId, chatId, onChatStarted, onQueryDone }
     const activeChatId = chatId || (Math.random().toString(36).substring(2, 15) + Date.now().toString(36));
     
     if (!chatId) {
+      isNewChatRef.current = true;
       onChatStarted(activeChatId);
     }
 
@@ -134,7 +145,7 @@ export default function QueryChat({ fileId, chatId, onChatStarted, onQueryDone }
       const res = await fetch(`${API}/query`, {
         method: "POST",
         headers,
-        body: JSON.stringify({ file_id: fileId, question, chat_id: activeChatId }),
+        body: JSON.stringify({ file_id: fileId, question, chat_id: activeChatId, language: language, complexity: complexity.split(' ')[0] }),
       });
 
       const data = await res.json();
@@ -340,6 +351,33 @@ export default function QueryChat({ fileId, chatId, onChatStarted, onQueryDone }
       )}
 
       <div className="input-area">
+        {/* 👇 NEW CONTROLS */}
+        {canQuery && (
+          <div style={{ display: "flex", gap: "10px", marginBottom: "8px", padding: "0 4px" }}>
+            <select 
+              value={language} 
+              onChange={(e) => setLanguage(e.target.value)}
+              style={{ padding: "4px 8px", borderRadius: "6px", fontSize: "12px", background: "var(--surface)", border: "1px solid var(--border)", color: "var(--text-secondary)" }}
+            >
+              <option value="English">🇬🇧 English</option>
+              <option value="Marathi">🇮🇳 Marathi</option>
+              <option value="Hindi">🇮🇳 Hindi</option>
+              <option value="Spanish">🇪🇸 Spanish</option>
+            </select>
+
+            <select 
+              value={complexity} 
+              onChange={(e) => setComplexity(e.target.value)}
+              style={{ padding: "4px 8px", borderRadius: "6px", fontSize: "12px", background: "var(--surface)", border: "1px solid var(--border)", color: "var(--text-secondary)" }}
+            >
+              <option value="Simple (Explain like I'm 5)">🧸 Simple (Explain like I'm 5)</option>
+              <option value="Executive (Professional)">👔 Executive (Professional)</option>
+              <option value="Technical (Data focused)">💻 Technical</option>
+            </select>
+          </div>
+        )}
+        {/* 👆 END NEW CONTROLS */}
+        
         <div className="input-wrapper">
           <textarea
             ref={textareaRef}

@@ -6,7 +6,7 @@ from app.repositories.semantic_registry_repo import (
     insert_registry_entry,
     add_alias_to_key
 )
-from app.services.llm_service import call_llm
+from app.services.llm_service import FAST_ROUTER_MODEL, call_llm
 import pandas as pd
 
 
@@ -149,7 +149,7 @@ Example output:
 }}
 """
 
-    return call_llm(prompt)
+    return call_llm(prompt, model=FAST_ROUTER_MODEL)
 
 
 # ---------------------------

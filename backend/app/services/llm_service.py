@@ -10,11 +10,13 @@ client = Groq(
 )
 
 # Fix: Use a valid Groq-supported model name
-MODEL = "openai/gpt-oss-120b"
+FAST_ROUTER_MODEL = "llama-3.1-8b-instant"           # Blazing fast for JSON routing & schema mapping
+SMART_STRATEGIST_MODEL = "openai/gpt-oss-120b" # Your heavy-duty model for reasoning & translation
 
-def call_llm(prompt: str):
+def call_llm(prompt: str, model: str = FAST_ROUTER_MODEL):
+    """Used for strict JSON tasks like intent extraction and mapping."""
     response = client.chat.completions.create(
-        model=MODEL,
+        model=model, # 👈 Use the passed-in model
         messages=[
             {"role": "system", "content": "You are a data schema analyst. Return JSON only. No markdown, no explanation, just raw JSON."},
             {"role": "user", "content": prompt}
@@ -24,7 +26,6 @@ def call_llm(prompt: str):
 
     content = response.choices[0].message.content.strip()
 
-    # Strip markdown code fences if present
     if content.startswith("```"):
         content = content.split("```")[1]
         if content.startswith("json"):
@@ -36,12 +37,9 @@ def call_llm(prompt: str):
     except json.JSONDecodeError as e:
         raise ValueError(f"LLM did not return valid JSON. Raw response: {content!r}. Error: {e}")
 
-def call_llm_text(prompt: str, expect_json: bool = False):
-    """
-    Call LLM for text or JSON responses.
-    Use expect_json=True when the prompt asks for a JSON array/object (e.g. suggestions).
-    Use expect_json=False for plain text responses.
-    """
+
+def call_llm_text(prompt: str, expect_json: bool = False, model: str = SMART_STRATEGIST_MODEL):
+    """Used for deep reasoning, suggestions, and language translation."""
     system_msg = (
         "You are a senior business analyst. Return JSON only. No markdown, no explanation."
         if expect_json
@@ -49,7 +47,7 @@ def call_llm_text(prompt: str, expect_json: bool = False):
     )
 
     response = client.chat.completions.create(
-        model=MODEL,
+        model=model, # 👈 Use the passed-in model
         messages=[
             {"role": "system", "content": system_msg},
             {"role": "user", "content": prompt}

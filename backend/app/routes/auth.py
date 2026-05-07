@@ -1,17 +1,13 @@
 from fastapi import APIRouter, HTTPException, Header
 from pydantic import BaseModel
-from app.db.database import db
+from app.db.database import users_collection
 from app.utils.auth_utils import hash_password, verify_password, create_token, decode_token
 from app.repositories.history_repo import get_user_chats, get_chat_messages
 from datetime import datetime
+from app.models.schemas import AuthRequest
 
 router = APIRouter()
-users_collection = db["users"]
 
-
-class AuthRequest(BaseModel):
-    email: str
-    password: str
 
 
 @router.post("/register")

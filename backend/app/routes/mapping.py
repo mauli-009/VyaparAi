@@ -5,11 +5,10 @@ import os
 from app.repositories.dataset_repo import get_dataset, update_mapping
 from app.services.registry_mapping_service import generate_mapping
 from app.utils.file_utils import download_from_s3
+from app.models.schemas import MappingRequest
 
 router = APIRouter()
 
-class MappingRequest(BaseModel):
-    file_id: str
 
 @router.post("/mapping")
 def map_columns(request: MappingRequest):
