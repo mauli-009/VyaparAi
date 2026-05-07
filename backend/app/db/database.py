@@ -15,3 +15,4 @@ datasets_collection = db["datasets"]
 semantic_registry_collection = db["semantic_registry"]
 users_collection = db["users"]
 history_collection = db["history"]  # ← explicitly defined
+dashboards_collection = db["dashboards"]

@@ -12,6 +12,19 @@ interface Props {
   onFileUploaded: (id: string, name: string) => void;
   onChatSelect: (chatId: string, fileId: string) => void;
   onNewChat: () => void;
+  onDeleteChat?: (chatId: string) => void;
+}
+
+/* ── Trash icon ── */
+function TrashIcon() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+      <polyline points="3 6 5 6 21 6" />
+      <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+      <path d="M10 11v6M14 11v6" />
+      <path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" />
+    </svg>
+  );
 }
 
 export default function Sidebar({
@@ -21,19 +34,18 @@ export default function Sidebar({
   historyTrigger,
   onFileUploaded,
   onChatSelect,
-  onNewChat
+  onNewChat,
+  onDeleteChat,
 }: Props) {
   const [uploading, setUploading] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  // Auth & History states
   const [token, setToken] = useState<string | null>(null);
   const [email, setEmail] = useState<string | null>(null);
   const [history, setHistory] = useState<any[]>([]);
 
-  // Modals & Menus
   const [showAuthModal, setShowAuthModal] = useState(false);
   const [showProfileMenu, setShowProfileMenu] = useState(false);
   const [isLogin, setIsLogin] = useState(true);
@@ -43,7 +55,6 @@ export default function Sidebar({
   const [authLoading, setAuthLoading] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
 
-  // Load token on mount
   useEffect(() => {
     const t = localStorage.getItem("token");
     const e = localStorage.getItem("email");
@@ -54,11 +65,8 @@ export default function Sidebar({
     }
   }, []);
 
-  // Re-fetch history whenever a new query is made
   useEffect(() => {
-    if (historyTrigger > 0 && token) {
-      fetchHistory(token);
-    }
+    if (historyTrigger > 0 && token) fetchHistory(token);
   }, [historyTrigger, token]);
 
   async function fetchHistory(jwt: string) {
@@ -88,7 +96,6 @@ export default function Sidebar({
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Authentication failed");
-
       localStorage.setItem("token", data.token);
       localStorage.setItem("email", data.email);
       setToken(data.token);
@@ -111,16 +118,11 @@ export default function Sidebar({
     setEmail(null);
     setHistory([]);
     setShowProfileMenu(false);
-    onNewChat(); // Clear screen on logout
+    onNewChat();
   }
 
   async function handleFile(file: File) {
-    // Extra safety check just in case
-    if (!token) {
-      setShowAuthModal(true);
-      return;
-    }
-    
+    if (!token) { setShowAuthModal(true); return; }
     if (!file.name.endsWith(".csv")) return setError("Only CSV files are supported.");
     setError(null);
     setUploading(true);
@@ -138,17 +140,21 @@ export default function Sidebar({
     }
   }
 
+  function handleDeleteChat(e: React.MouseEvent, chatId: string) {
+    e.stopPropagation();
+    setHistory((prev) => prev.filter((h) => h.chat_id !== chatId));
+    if (currentChatId === chatId) onNewChat();
+    onDeleteChat?.(chatId);
+    // TODO: hook to backend DELETE /auth/chats/:chatId
+  }
+
   function formatDate(dateStr: string) {
-    // FIX 1: Ensure the browser treats the string as UTC by appending "Z"
-    const safeDateStr = dateStr.endsWith("Z") ? dateStr : `${dateStr}Z`;
-    const d = new Date(safeDateStr);
-    const now = new Date();
-    
-    const diff = now.getTime() - d.getTime();
+    const safe = dateStr.endsWith("Z") ? dateStr : `${dateStr}Z`;
+    const d = new Date(safe);
+    const diff = Date.now() - d.getTime();
     const mins = Math.floor(diff / 60000);
     const hours = Math.floor(diff / 3600000);
     const days = Math.floor(diff / 86400000);
-    
     if (mins < 1) return "just now";
     if (mins < 60) return `${mins}m ago`;
     if (hours < 24) return `${hours}h ago`;
@@ -158,46 +164,29 @@ export default function Sidebar({
 
   return (
     <aside className="sidebar">
+
       {/* ── Auth Modal ── */}
       {showAuthModal && (
         <div className="modal-overlay" onClick={() => setShowAuthModal(false)}>
           <div className="modal-content" onClick={(e) => e.stopPropagation()}>
             <button className="modal-close" onClick={() => setShowAuthModal(false)}>✕</button>
             <h2 className="modal-title">{isLogin ? "Welcome back" : "Create account"}</h2>
-
             <form onSubmit={handleAuth}>
               <div className="form-group">
                 <label>Email address</label>
-                <input
-                  type="email"
-                  required
-                  className="form-input"
-                  value={authEmail}
-                  onChange={(e) => setAuthEmail(e.target.value)}
-                />
+                <input type="email" required className="form-input" value={authEmail}
+                  onChange={(e) => setAuthEmail(e.target.value)} />
               </div>
               <div className="form-group">
                 <label>Password</label>
-                <input
-                  type="password"
-                  required
-                  className="form-input"
-                  value={authPassword}
-                  onChange={(e) => setAuthPassword(e.target.value)}
-                />
+                <input type="password" required className="form-input" value={authPassword}
+                  onChange={(e) => setAuthPassword(e.target.value)} />
               </div>
-
-              {authError && (
-                <div className="error-banner" style={{ marginBottom: 12 }}>
-                  {authError}
-                </div>
-              )}
-
+              {authError && <div className="error-banner" style={{ marginBottom: 12 }}>{authError}</div>}
               <button type="submit" className="btn btn-primary btn-full" disabled={authLoading}>
                 {authLoading ? <div className="spinner" /> : isLogin ? "Sign In" : "Sign Up"}
               </button>
             </form>
-
             <div className="auth-switch">
               {isLogin ? "Don't have an account? " : "Already have an account? "}
               <button type="button" onClick={() => { setIsLogin(!isLogin); setAuthError(null); }}>
@@ -218,33 +207,25 @@ export default function Sidebar({
       </div>
 
       <div className="sidebar-body">
-        {/* ── Upload Section ── */}
+
+        {/* ── Dataset Section ── */}
         <div>
           <div className="sidebar-section-label">Active Dataset</div>
           {!fileId ? (
             <div
-              className={`upload-zone ${dragOver ? "drag-over" : ""}`}
+              className={`upload-zone${dragOver ? " drag-over" : ""}`}
               onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
               onDragLeave={() => setDragOver(false)}
               onDrop={(e) => {
                 e.preventDefault();
                 setDragOver(false);
-                // FIX 2: Block drop if not logged in
-                if (!token) {
-                  setShowAuthModal(true);
-                  return;
-                }
+                if (!token) { setShowAuthModal(true); return; }
                 const file = e.dataTransfer.files[0];
                 if (file) handleFile(file);
               }}
-              onClick={(e) => {
-                // FIX 2: Block click if not logged in
-                if (!token) {
-                  e.preventDefault();
-                  setShowAuthModal(true);
-                } else {
-                  inputRef.current?.click();
-                }
+              onClick={() => {
+                if (!token) { setShowAuthModal(true); return; }
+                inputRef.current?.click();
               }}
             >
               <input
@@ -253,20 +234,17 @@ export default function Sidebar({
                 accept=".csv"
                 style={{ display: "none" }}
                 onChange={(e) => {
-                  if (!token) {
-                    setShowAuthModal(true);
-                    return;
-                  }
+                  if (!token) { setShowAuthModal(true); return; }
                   const file = e.target.files?.[0];
                   if (file) handleFile(file);
                 }}
               />
-              <svg className="upload-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-                <path d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" strokeLinecap="round" strokeLinejoin="round" />
+              <svg className="upload-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
               </svg>
               {uploading ? (
-                <div style={{ display: "flex", justifyContent: "center", alignItems: "center", gap: 8, fontSize: 12, color: "var(--text-secondary)" }}>
-                  <div className="spinner spinner-dark" /> Analyzing columns...
+                <div style={{ display: "flex", justifyContent: "center", alignItems: "center", gap: 8, fontSize: 12, color: "var(--text-2)" }}>
+                  <div className="spinner spinner-dark" /> Analyzing...
                 </div>
               ) : (
                 <>
@@ -279,65 +257,61 @@ export default function Sidebar({
             <div className="file-card">
               <div className="file-card-header">
                 <div className="file-card-icon">
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                    <path d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" strokeLinecap="round" strokeLinejoin="round" />
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
                   </svg>
                 </div>
                 <div className="file-card-info">
                   <div className="file-card-name">{fileName}</div>
-                  <div className="file-card-id" style={{ color: "var(--success)" }}>Ready to analyze</div>
+                  <div className="file-card-id" style={{ color: "var(--success)" }}>● Ready to analyze</div>
                 </div>
               </div>
             </div>
           )}
+          {error && (
+            <div className="error-banner" style={{ marginTop: 8 }}>
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ flexShrink: 0 }}>
+                <circle cx="12" cy="12" r="10" /><line x1="12" y1="8" x2="12" y2="12" /><line x1="12" y1="16" x2="12.01" y2="16" />
+              </svg>
+              {error}
+            </div>
+          )}
         </div>
 
-        {/* ── Upload Error ── */}
-        {error && (
-          <div className="error-banner">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ flexShrink: 0 }}>
-              <circle cx="12" cy="12" r="10" /><line x1="12" y1="8" x2="12" y2="12" /><line x1="12" y1="16" x2="12.01" y2="16" />
-            </svg>
-            {error}
-          </div>
-        )}
-
-        {/* ── History Section ── */}
+        {/* ── History ── */}
         {token && (
-          <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
-            <div className="sidebar-section-label" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 10 }}>
+          <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", minHeight: 0 }}>
+            <div className="sidebar-section-label" style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
               <span>Recent Chats</span>
-              <button 
-                onClick={onNewChat}
-                style={{ background: "none", border: "none", color: "var(--accent)", cursor: "pointer", fontSize: 11, fontWeight: 700 }}
-              >
-                + New Chat
-              </button>
+              <button className="new-chat-btn" onClick={onNewChat}>+ New</button>
             </div>
 
             {history.length === 0 ? (
-              <div style={{ fontSize: 12, color: "var(--text-muted)", padding: "10px 4px", lineHeight: 1.5 }}>
+              <p style={{ fontSize: 12, color: "var(--text-3)", padding: "8px 2px", lineHeight: 1.55 }}>
                 No history yet. Ask a question to get started.
-              </div>
+              </p>
             ) : (
-              <div className="history-list" style={{ overflowY: "auto", flex: 1, paddingRight: 4 }}>
+              <div className="history-list">
                 {history.map((h) => {
                   const isActive = h.chat_id === currentChatId;
                   return (
-                    <div 
-                      key={h.chat_id} 
-                      className="history-item"
+                    <div
+                      key={h.chat_id}
+                      className={`history-item${isActive ? " is-active" : ""}`}
                       onClick={() => onChatSelect(h.chat_id, h.file_id)}
-                      style={{ 
-                        background: isActive ? "var(--surface-hover)" : "transparent",
-                        borderLeft: isActive ? "3px solid var(--accent)" : "3px solid transparent",
-                        paddingLeft: isActive ? "9px" : "12px"
-                      }}
+                      title={h.title}
                     >
-                      <div className="history-question" style={{ color: isActive ? "var(--accent)" : "var(--text-primary)" }}>
-                        {h.title}
+                      <div className="history-item-body">
+                        <div className="history-question">{h.title}</div>
+                        <div className="history-meta">{formatDate(h.updated_at)}</div>
                       </div>
-                      <div className="history-meta">{formatDate(h.updated_at)}</div>
+                      <button
+                        className="history-delete-btn"
+                        onClick={(e) => handleDeleteChat(e, h.chat_id)}
+                        title="Delete chat"
+                      >
+                        <TrashIcon />
+                      </button>
                     </div>
                   );
                 })}
@@ -346,7 +320,7 @@ export default function Sidebar({
           </div>
         )}
 
-        {/* ── Profile / Auth Footer ── */}
+        {/* ── Profile Footer ── */}
         <div className="auth-footer">
           {token ? (
             <div className="profile-container">
@@ -355,14 +329,14 @@ export default function Sidebar({
                   <div style={{ position: "fixed", inset: 0, zIndex: 99 }} onClick={() => setShowProfileMenu(false)} />
                   <div className="profile-popover">
                     <button className="popover-item">
-                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                         <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" /><circle cx="12" cy="7" r="4" />
                       </svg>
                       My Account
                     </button>
                     <div className="popover-divider" />
                     <button className="popover-item danger" onClick={logout}>
-                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                         <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /><polyline points="16 17 21 12 16 7" /><line x1="21" y1="12" x2="9" y2="12" />
                       </svg>
                       Sign Out
@@ -376,18 +350,21 @@ export default function Sidebar({
                   <div className="profile-email">{email}</div>
                   <div className="profile-action">Free Plan</div>
                 </div>
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" style={{ color: "var(--text-3)", flexShrink: 0 }}>
+                  <polyline points="6 9 12 15 18 9" />
+                </svg>
               </button>
             </div>
           ) : (
             <button className="profile-btn" onClick={() => setShowAuthModal(true)}>
-              <div className="profile-avatar" style={{ background: "var(--surface-hover)", color: "var(--text-muted)" }}>
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <div className="profile-avatar" style={{ background: "var(--surface-2)", color: "var(--text-3)" }}>
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                   <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" /><circle cx="12" cy="7" r="4" />
                 </svg>
               </div>
               <div className="profile-info">
-                <div className="profile-email" style={{ color: "var(--text-secondary)" }}>Not signed in</div>
-                <div className="profile-action" style={{ color: "var(--accent)" }}>Sign in to upload data</div>
+                <div className="profile-email" style={{ color: "var(--text-2)" }}>Not signed in</div>
+                <div className="profile-action" style={{ color: "var(--brand)" }}>Sign in to upload data</div>
               </div>
             </button>
           )}

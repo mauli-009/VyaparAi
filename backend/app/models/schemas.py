@@ -11,6 +11,7 @@ class MappingRequest(BaseModel):
 class QueryRequest(BaseModel):
     file_id: str
     question: str
+    intent_override: Optional[dict] = None
     chat_id: Optional[str] = None
     file_name: Optional[str] = None
     language: Optional[str] = "English" 

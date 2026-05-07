@@ -9,14 +9,14 @@ function formatValue(val: number): string {
 }
 
 function SingleValue({ value, intent }: { value: number; intent: any }) {
-  const field  = intent?.field?.replace(/_/g, " ") || "value";
-  const metric = intent?.metric || "";
+  const field   = intent?.field?.replace(/_/g, " ") || "value";
+  const metric  = intent?.metric || "";
   const filters = intent?.filters || [];
 
   return (
     <div className="result-card" style={{ maxWidth: 340 }}>
       <div className="result-card-header">
-        <span className="result-card-label">{metric} · {field}</span>
+        <span className="result-card-label">{metric}{metric && field ? " · " : ""}{field}</span>
       </div>
       <div className="result-card-body">
         <div className="result-value">{formatValue(value)}</div>
@@ -51,9 +51,7 @@ function TableResult({ rows, intent }: { rows: any[]; intent: any }) {
     <div className="result-card" style={{ maxWidth: 540 }}>
       <div className="result-card-header">
         <span className="result-card-label">{metric} of {field} · by {keyLabel}</span>
-        <span style={{ fontSize: 11, color: "var(--text-muted)", fontWeight: 600 }}>
-          {rows.length} rows
-        </span>
+        <span style={{ fontSize: 11, color: "var(--text-3)", fontWeight: 700 }}>{rows.length} rows</span>
       </div>
       <div style={{ maxHeight: 340, overflowY: "auto" }}>
         <table className="result-table">
@@ -69,7 +67,7 @@ function TableResult({ rows, intent }: { rows: any[]; intent: any }) {
               const pct = max > 0 ? (row.value / max) * 100 : 0;
               return (
                 <tr key={i}>
-                  <td style={{ fontWeight: 500 }}>{String(getLabel(row))}</td>
+                  <td style={{ fontWeight: 600 }}>{String(getLabel(row))}</td>
                   <td className="td-value">{formatValue(row.value)}</td>
                   <td className="td-bar">
                     <div className="bar-track">
@@ -88,15 +86,17 @@ function TableResult({ rows, intent }: { rows: any[]; intent: any }) {
 
 export default function ResultCard({ result, intent }: { result: any; intent: any }) {
   if (!result) return null;
+  if (result.error) return <div className="error-banner">❌ {result.error}</div>;
 
   const rows = result.results || [];
 
-  if (result.error)
-    return <div className="error-banner">❌ {result.error}</div>;
-
   if (result.message && rows.length === 0)
     return (
-      <div className="error-banner" style={{ background: "var(--warning-light)", borderColor: "#f5d98b", color: "var(--warning)" }}>
+      <div className="error-banner" style={{
+        background: "var(--warning-dim)",
+        borderColor: "rgba(217, 119, 6, 0.2)",
+        color: "var(--warning)",
+      }}>
         ⚠️ {result.message}
       </div>
     );

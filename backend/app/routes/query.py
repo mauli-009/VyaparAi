@@ -62,8 +62,15 @@ def query_dataset(request: QueryRequest, authorization: str = Header(None)):
                     history_text = "\n".join(history_lines)
 
         
-        # ── 4. Extract intent ──────────────────────────────────────────────
-        intent = extract_intent(request.question, dataset["semantic_mapping"], column_values)
+
+       # ── 4. Extract intent ──────────────────────────────────────────────
+        if getattr(request, "intent_override", None):
+            # Bypass the LLM entirely for the Dashboard! Lightning fast.
+            intent = request.intent_override 
+        else:
+            # Use the normal chat flow (and pass the history_text so it remembers!)
+            intent = extract_intent(request.question, dataset["semantic_mapping"], column_values, history_text)
+            
         action = intent.get("action", "aggregate")
         
         frontend_query_type_map = {
