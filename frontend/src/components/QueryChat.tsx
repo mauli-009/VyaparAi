@@ -26,7 +26,7 @@ interface Message {
   suggestions?: any[];
   recommendation?: any;
   records?: any[];
-  queryType?: "aggregation" | "suggestion" | "recommendation" | "list_records" | "both";
+  queryType?: "aggregation" | "suggestion" | "recommendation" | "list_records" | "both" | "text";
   error?: string;
   loading?: boolean;
 }
@@ -45,68 +45,126 @@ export default function QueryChat({ fileId, chatId, onChatStarted, onQueryDone }
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const isNewChatRef = useRef(false);
+  
+  // Track the last checked file to prevent race conditions on the health check
+  const [lastCheckedFile, setLastCheckedFile] = useState<string | null>(null);
+  
   const [language, setLanguage] = useState("English");
   const [complexity, setComplexity] = useState("Simple (Explain like I'm 5)");
 
-  // Auto scroll
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
+// 🎙️ Voice Recognition State
+const [isListening, setIsListening] = useState(false);
+const recognitionRef = useRef<any>(null);
+const isListeningRef = useRef(false); // mirrors isListening for use inside callbacks
 
-  // Load Past Messages when a chat from the sidebar is clicked
-  useEffect(() => {
-    if (!chatId) {
-      setMessages([]);
-      return;
-    }
+// Auto-resize textarea whenever 'input' changes
+useEffect(() => {
+  if (textareaRef.current) {
+    textareaRef.current.style.height = "auto";
+    textareaRef.current.style.height = Math.min(textareaRef.current.scrollHeight, 120) + "px";
+  }
+}, [input]);
 
-    if (isNewChatRef.current) {
-      isNewChatRef.current = false;
-      return; 
-    }
+// Initialize Speech Recognition
+useEffect(() => {
+  const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+  
+  if (!SpeechRecognition) return;
 
-    setMessages([]);
+  const recognition = new SpeechRecognition();
+  recognition.continuous = true;
+  recognition.interimResults = true;
+  recognition.lang = "en-US";
 
-    async function loadPastChat() {
-      const token = localStorage.getItem("token");
-      if (!token) return;
-      
-      try {
-        const res = await fetch(`${API}/auth/chats/${chatId}`, {
-          headers: { Authorization: `Bearer ${token}` }
-        });
-        const data = await res.json();
-        
-        if (data.messages) {
-          const restoredMessages: Message[] = [];
-          data.messages.forEach((m: any, i: number) => {
-            // User Message
-            restoredMessages.push({ id: `hist-${i}-u`, role: "user", text: m.question });
-            
-            // AI Message
-            const resData = m.response || {};
-            const qType = resData.query_type || "aggregation";
-            restoredMessages.push({
-              id: `hist-${i}-a`,
-              role: "assistant",
-              text: buildSummaryText(qType, resData),
-              intent: resData.intent,
-              result: resData.result,
-              suggestions: resData.suggestions,
-              recommendation: resData.recommendation,
-              queryType: qType,
-            });
-          });
-          setMessages(restoredMessages);
-        }
-      } catch (e) {
-        console.error("Failed to load past messages");
+  recognition.onresult = (event: any) => {
+    // Only collect results from the current session start (resultIndex),
+    // not the full accumulated list — prevents duplicate/overwritten text.
+    let finalTranscript = "";
+    let interimTranscript = "";
+
+    for (let i = event.resultIndex; i < event.results.length; i++) {
+      const transcript = event.results[i][0].transcript;
+      if (event.results[i].isFinal) {
+        finalTranscript += transcript;
+      } else {
+        interimTranscript += transcript;
       }
     }
-    
-    loadPastChat();
-  }, [chatId]);
 
+    setInput((prev) => {
+      // Append final words; show interim as a preview suffix
+      const base = prev + finalTranscript;
+      return interimTranscript ? base + interimTranscript : base;
+    });
+  };
+
+  recognition.onerror = (event: any) => {
+    console.error("Microphone error:", event.error);
+    if (event.error === "not-allowed") {
+      alert("Microphone blocked! Click the mic/camera icon in your browser's address bar and choose 'Allow'.");
+    }
+    isListeningRef.current = false;
+    setIsListening(false);
+  };
+
+  recognition.onend = () => {
+    // If the user hasn't manually stopped, restart to keep listening continuously.
+    // (Browsers auto-stop recognition after silence; this resumes it.)
+    if (isListeningRef.current) {
+      try {
+        recognition.start();
+      } catch {
+        // already started — ignore
+      }
+    } else {
+      setIsListening(false);
+    }
+  };
+
+  recognitionRef.current = recognition;
+}, []);
+
+// Update microphone language when user changes the dropdown
+useEffect(() => {
+  if (recognitionRef.current) {
+    const langMap: Record<string, string> = {
+      "English": "en-US",
+      "Marathi": "mr-IN",
+      "Hindi": "hi-IN",
+      "Spanish": "es-ES"
+    };
+    recognitionRef.current.lang = langMap[language] || "en-US";
+  }
+}, [language]);
+
+
+const toggleListening = () => {
+  if (!recognitionRef.current) {
+    alert("Your browser does not support voice recognition. Try Google Chrome or Edge.");
+    return;
+  }
+
+  if (isListeningRef.current) {
+    // User wants to stop — flip ref first so onend doesn't restart
+    isListeningRef.current = false;
+    recognitionRef.current.stop();
+    setIsListening(false);
+  } else {
+    setInput("");
+    isListeningRef.current = true;
+    setIsListening(true);
+    try {
+      recognitionRef.current.start();
+    } catch (err) {
+      console.error("Failed to start mic:", err);
+      isListeningRef.current = false;
+      setIsListening(false);
+    }
+  }
+};
+
+// (You can DELETE your old `function autoResize() { ... }` completely, 
+// because FIX 1 handles it perfectly now!)
   function autoResize() {
     const ta = textareaRef.current;
     if (!ta) return;
@@ -114,10 +172,9 @@ export default function QueryChat({ fileId, chatId, onChatStarted, onQueryDone }
     ta.style.height = Math.min(ta.scrollHeight, 120) + "px";
   }
 
-  async function sendQuery(question: string) {
+  async function sendQuery(question: string, isHidden: boolean = false) {
     if (!question.trim() || !fileId || loading) return;
 
-    // Determine active Chat ID or create a new one
     const activeChatId = chatId || (Math.random().toString(36).substring(2, 15) + Date.now().toString(36));
     
     if (!chatId) {
@@ -127,10 +184,15 @@ export default function QueryChat({ fileId, chatId, onChatStarted, onQueryDone }
 
     const userMsg: Message = { id: Date.now() + "u", role: "user", text: question };
     const loadingMsg: Message = { id: Date.now() + "a", role: "assistant", text: "", loading: true };
-
-    setMessages((prev) => [...prev, userMsg, loadingMsg]);
-    setInput("");
-    if (textareaRef.current) textareaRef.current.style.height = "auto";
+    
+    if (isHidden) {
+      setMessages((prev) => [...prev, loadingMsg]);
+    } else {
+      setMessages((prev) => [...prev, userMsg, loadingMsg]);
+      setInput("");
+      if (textareaRef.current) textareaRef.current.style.height = "auto";
+    }
+    
     setLoading(true);
 
     try {
@@ -145,7 +207,13 @@ export default function QueryChat({ fileId, chatId, onChatStarted, onQueryDone }
       const res = await fetch(`${API}/query`, {
         method: "POST",
         headers,
-        body: JSON.stringify({ file_id: fileId, question, chat_id: activeChatId, language: language, complexity: complexity.split(' ')[0] }),
+        body: JSON.stringify({ 
+          file_id: fileId, 
+          question, 
+          chat_id: activeChatId, 
+          language: language, 
+          complexity: complexity.split(' ')[0] 
+        }),
       });
 
       const data = await res.json();
@@ -178,7 +246,6 @@ export default function QueryChat({ fileId, chatId, onChatStarted, onQueryDone }
         )
       );
 
-      // Tell sidebar to refresh history
       if (token) onQueryDone?.();
 
     } catch (e: any) {
@@ -195,6 +262,9 @@ export default function QueryChat({ fileId, chatId, onChatStarted, onQueryDone }
   }
 
   function buildSummaryText(queryType: string, data: any): string {
+    if (queryType === "text") {
+      return data.result?.message || "Request processed.";
+    }
     if (queryType === "recommendation") {
       const top = data.recommendation?.top_pick;
       return top
@@ -283,15 +353,7 @@ export default function QueryChat({ fileId, chatId, onChatStarted, onQueryDone }
                   </div>
                 ) : msg.error ? (
                   <div className="error-banner">
-                    <svg
-                      width="14"
-                      height="14"
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="2"
-                      style={{ flexShrink: 0 }}
-                    >
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ flexShrink: 0 }}>
                       <circle cx="12" cy="12" r="10" />
                       <line x1="12" y1="8" x2="12" y2="12" />
                       <line x1="12" y1="16" x2="12.01" y2="16" />
@@ -300,13 +362,12 @@ export default function QueryChat({ fileId, chatId, onChatStarted, onQueryDone }
                   </div>
                 ) : (
                   <>
-                    <div className="message-bubble">
+                    <div className="message-bubble" style={{ whiteSpace: "pre-wrap" }}>
                       {msg.text.split(/\*\*(.+?)\*\*/).map((part, i) =>
                         i % 2 === 1 ? <strong key={i}>{part}</strong> : part
                       )}
                     </div>
 
-                    {/* Intent pills */}
                     {msg.intent && msg.queryType === "aggregation" && (
                       <div className="intent-pills">
                         <span className="intent-pill">⚡ {msg.intent.metric}</span>
@@ -323,24 +384,20 @@ export default function QueryChat({ fileId, chatId, onChatStarted, onQueryDone }
                       </div>
                     )}
 
-                    {/* Unified Data & Visualization Renderer */}
                     {(msg.result || msg.records) &&
                       (msg.queryType === "aggregation" || msg.queryType === "both" || msg.queryType === "list_records") && (
                         <DynamicRenderer msg={msg} />
                     )}
 
-                    {/* Suggestion cards */}
                     {msg.suggestions &&
                       msg.suggestions.length > 0 &&
                       (msg.queryType === "suggestion" || msg.queryType === "both") && (
                         <SuggestionCards suggestions={msg.suggestions} />
                       )}
 
-                    {/* Recommendation card */}
                     {msg.recommendation && msg.queryType === "recommendation" && (
                       <RecommendationCard recommendation={msg.recommendation} />
                     )}
-
                   </>
                 )}
               </div>
@@ -351,7 +408,6 @@ export default function QueryChat({ fileId, chatId, onChatStarted, onQueryDone }
       )}
 
       <div className="input-area">
-        {/* 👇 NEW CONTROLS */}
         {canQuery && (
           <div style={{ display: "flex", gap: "10px", marginBottom: "8px", padding: "0 4px" }}>
             <select 
@@ -376,16 +432,14 @@ export default function QueryChat({ fileId, chatId, onChatStarted, onQueryDone }
             </select>
           </div>
         )}
-        {/* 👆 END NEW CONTROLS */}
         
-        <div className="input-wrapper">
+        <div className="input-wrapper" style={{ display: "flex", alignItems: "center", gap: "8px" }}>
           <textarea
             ref={textareaRef}
             rows={1}
             placeholder={
-              canQuery
-                ? "Ask a question, request analysis, or get product recommendations…"
-                : "Upload a file first"
+              isListening ? "Listening... speak now" :
+              canQuery ? "Ask a question, request analysis..." : "Upload a file first"
             }
             value={input}
             disabled={!canQuery || loading}
@@ -399,7 +453,38 @@ export default function QueryChat({ fileId, chatId, onChatStarted, onQueryDone }
                 sendQuery(input);
               }
             }}
+            style={{ flex: 1 }}
           />
+
+          {/* 🎙️ Microphone Button */}
+          <button
+            onClick={toggleListening}
+            disabled={!canQuery || loading}
+            style={{
+              background: "transparent",
+              border: "none",
+              cursor: (!canQuery || loading) ? "not-allowed" : "pointer",
+              padding: "8px",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              color: isListening ? "#ef4444" : "var(--text-muted)",
+              transition: "0.2s"
+            }}
+            title="Voice Command"
+          >
+            {isListening ? (
+              <div style={{ width: 14, height: 14, background: "#ef4444", borderRadius: 3, animation: "pulse 1.5s infinite" }} />
+            ) : (
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z" />
+                <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+                <line x1="12" y1="19" x2="12" y2="22" />
+              </svg>
+            )}
+          </button>
+
+          {/* Send Button */}
           <button
             className="send-btn"
             disabled={!input.trim() || !canQuery || loading}
@@ -408,14 +493,7 @@ export default function QueryChat({ fileId, chatId, onChatStarted, onQueryDone }
             {loading ? (
               <div className="spinner" style={{ width: 12, height: 12 }} />
             ) : (
-              <svg
-                width="14"
-                height="14"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2.5"
-              >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
                 <line x1="22" y1="2" x2="11" y2="13" />
                 <polygon points="22 2 15 22 11 13 2 9 22 2" />
               </svg>

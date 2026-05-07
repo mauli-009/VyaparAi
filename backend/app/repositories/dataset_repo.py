@@ -8,7 +8,8 @@ def create_dataset(dataset_data):
 def get_dataset(file_id: str):
     return datasets_collection.find_one({"file_id": file_id})
 
-def update_mapping(file_id: str, mapping: dict, columns: list = None, column_types: dict = None, column_values: dict = None):
+# 🔥 FIX: Added data_health to the parameters
+def update_mapping(file_id: str, mapping: dict, columns: list = None, column_types: dict = None, column_values: dict = None, data_health: dict = None):
     # Always update the semantic mapping
     update_data = {
         "semantic_mapping": mapping
@@ -21,9 +22,19 @@ def update_mapping(file_id: str, mapping: dict, columns: list = None, column_typ
         update_data["column_types"] = column_types
     if column_values is not None:
         update_data["column_values"] = column_values
+        
+    # 🔥 FIX: Save the health report to MongoDB!
+    if data_health is not None:
+        update_data["data_health"] = data_health
 
     # Send the update to MongoDB
     datasets_collection.update_one(
         {"file_id": file_id},
         {"$set": update_data}
+    )
+    
+def add_cleaning_rule(file_id: str, rule: dict):
+    datasets_collection.update_one(
+        {"file_id": file_id},
+        {"$push": {"cleaning_rules": rule}}
     )

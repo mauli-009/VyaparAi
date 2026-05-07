@@ -37,6 +37,9 @@ LIST_KEYWORDS = [
     "give me all", "fetch", "which rows", "all records", "all products", "links"
 ]
 
+# NEW DATA JANITOR KEYWORDS
+CLEAN_KEYWORDS = ["clean", "missing", "drop", "fill", "null", "nan", "duplicates", "average", "zero"]
+
 def detect_action(question: str) -> str | None:
     """
     Returns the core action or None if unsure.
@@ -46,6 +49,7 @@ def detect_action(question: str) -> str | None:
     if any(kw in q for kw in METADATA_KEYWORDS): return "metadata"
     if any(kw in q for kw in RECOMMENDATION_KEYWORDS): return "recommend"
     if any(kw in q for kw in SUGGESTION_KEYWORDS): return "suggest"
+    if any(kw in q for kw in CLEAN_KEYWORDS) and ("missing" in q or "drop" in q or "fill" in q or "duplicates" in q): return "clean"
     if any(kw in q for kw in LIST_KEYWORDS) and not any(kw in q for kw in AGGREGATION_KEYWORDS): return "list"
     if any(kw in q for kw in AGGREGATION_KEYWORDS): return "aggregate"
         
@@ -74,8 +78,7 @@ def extract_intent(question: str, semantic_mapping: dict, column_values: dict = 
         for field, vals in column_values.items():
             values_section += f'  "{field}": {vals}\n'
 
-    # 3. Universal Schema Prompt
-    # 3. Universal Schema Prompt
+    # 3. Universal Schema Prompt (Fixed & Merged)
     prompt = f"""
 You are an advanced data query router.
 User question: "{question}"
@@ -90,7 +93,7 @@ Supported operators: {SUPPORTED_OPERATORS}
 You must convert the user's question into this EXACT JSON structure. Do NOT change the keys.
 
 {{
-  "action": "aggregate" | "list" | "metadata" | "suggest" | "recommend",
+  "action": "aggregate" | "list" | "metadata" | "suggest" | "recommend" | "clean",
   "select": ["column_name_1"],
   "metric": "sum | avg | count", 
   "field": "column_name",
@@ -99,14 +102,30 @@ You must convert the user's question into this EXACT JSON structure. Do NOT chan
   "sort_by": "column_name" or null,
   "order": "desc" | "asc",
   "limit": 10,
-  "suggested_charts": []
+  "suggested_charts": [],
+  "clean_rule": {{"field": "column_name" or "all", "op": "drop_nulls" | "fill_mean" | "fill_median" | "fill_zero" | "drop_duplicates"}} or null
 }}
 
 RULES FOR CHARTS & GROUPING:
 - Valid chart types: "bar_chart", "pie_chart", "line_chart", "scatter_chart".
 - CRITICAL: NEVER use continuous numerical columns (like price, rating) for "group_by". "group_by" MUST be categorical.
 - CONVERSATIONAL MEMORY: If the user asks a follow-up question (e.g., "What about Houston?"), you MUST KEEP the same "action", "metric", and "field" from the 'Recent Chat History' and ONLY update the "filters". Do NOT switch to "list" unless explicitly asked.
-- EXPLICIT OVERRIDE: If the user explicitly asks for a specific chart type...
+- If the user compares TWO NUMERICAL fields (e.g., "rating vs price"):
+    1. Set "action" to "list".
+    2. Put both column names in the "select" array (e.g., ["price", "rating"]).
+    3. Set "limit" to 100.
+    4. DEFAULT: Put "scatter_chart" in "suggested_charts".
+    5. OVERRIDE: If they explicitly asked for a "line chart", use "line_chart" INSTEAD, and you MUST set "sort_by" to the first column in "asc" order.
+- If the user asks for a visualization but DOES NOT specify columns, set "action" to "suggest" and leave "suggested_charts" empty [].
+
+RULES FOR CLEANING:
+- If action is "clean", you MUST provide the "clean_rule" object. 
+- "op" choices: 
+  - "drop_nulls" (Remove rows with missing values)
+  - "fill_mean" (Fill missing with average)
+  - "fill_median" (Fill missing with median)
+  - "fill_zero" (Fill missing with 0)
+  - "drop_duplicates" (Remove duplicate rows. Set field to "all").
 """
 
     intent = call_llm(prompt, model=FAST_ROUTER_MODEL)
