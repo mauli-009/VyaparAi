@@ -246,21 +246,23 @@ export default function DashboardView({ fileId }: { fileId: string | null }) {
         </svg>
         Drag cards to reorder
       </p>
-      <div className="dashboard-grid">
+      <div style={{
+        display: "grid",
+        gridTemplateColumns: "repeat(3, 1fr)",
+        gap: 16,
+      }}>
         {layout.map((widget) => {
-          const isDragging  = widget.id === dragId;
-          const isDragTarget = widget.id === dragOverId;
-          const spanTwo = widget.grid_position?.w === 2;
-
+          const w = widget.grid_position?.w ?? 1;
+          const span = w >= 2 ? "span 2" : "span 1";
           return (
             <div
               key={widget.id}
               className={[
                 "dash-card",
-                isDragging   ? "is-dragging"  : "",
-                isDragTarget ? "drag-target"  : "",
+                dragId === widget.id   ? "is-dragging"  : "",
+                dragOverId === widget.id ? "drag-target" : "",
               ].join(" ")}
-              style={{ gridColumn: spanTwo ? "span 2" : "span 1" }}
+              style={{ gridColumn: span }}
               draggable
               onDragStart={(e) => handleDragStart(e, widget.id)}
               onDragEnter={(e) => handleDragEnter(e, widget.id)}
