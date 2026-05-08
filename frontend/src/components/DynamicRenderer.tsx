@@ -43,23 +43,29 @@ export default function DynamicRenderer({ msg }: { msg: any }) {
   const intent  = msg.intent || {};
   const rawData = msg.result?.results || msg.records || [];
 
+  // Check if data has numeric values (needed for charts)
+  const hasNumericData = rawData.length > 0 &&
+    Object.values(rawData[0]).some((v) => typeof v === "number");
+
   // Infer chart type from data shape when the LLM didn't suggest one
   function inferCharts(): string[] {
-    if (rawData.length === 0) return [];
+    if (!hasNumericData || rawData.length === 0) return [];
     const first = rawData[0];
-    if ("period" in first)   return ["line_chart", "bar_chart"];  // time-series
+    if ("period" in first)   return ["line_chart", "bar_chart"];
     if ("group" in first ||
         "category" in first ||
-        "region" in first)   return ["bar_chart", "pie_chart"];   // categorical
+        "region" in first)   return ["bar_chart", "pie_chart"];
     return [];
   }
 
   const suggestedCharts: string[] =
-    intent.suggested_charts?.length > 0 ? intent.suggested_charts : inferCharts();
+    (hasNumericData && intent.suggested_charts?.length > 0)
+      ? intent.suggested_charts
+      : inferCharts();
 
-  // Auto-show chart for all grouped data (multiple rows)
+  // Auto-show chart for grouped data with multiple rows
   const hasMultipleRows      = rawData.length > 1;
-  const shouldDefaultToChart = suggestedCharts.length > 0 && hasMultipleRows;
+  const shouldDefaultToChart = hasNumericData && suggestedCharts.length > 0 && hasMultipleRows;
 
   const [selectedChart, setSelectedChart] = useState<string | null>(
     shouldDefaultToChart ? suggestedCharts[0] : null

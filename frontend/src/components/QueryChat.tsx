@@ -45,10 +45,21 @@ export default function QueryChat({ fileId, chatId, onChatStarted, onQueryDone }
   const [showControls, setShowControls] = useState(false);
   const [language, setLanguage] = useState("English");
   const [complexity, setComplexity] = useState("Simple (Explain like I'm 5)");
+  const [isListening, setIsListening] = useState(false);
+  const [voiceSupported, setVoiceSupported] = useState(false);
 
-  const bottomRef   = useRef<HTMLDivElement>(null);
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const isNewChatRef = useRef(false);
+  const bottomRef      = useRef<HTMLDivElement>(null);
+  const textareaRef    = useRef<HTMLTextAreaElement>(null);
+  const isNewChatRef   = useRef(false);
+  const recognitionRef = useRef<any>(null);
+  // Ref tracks intended listening state — needed because Chrome fires onend
+  // spuriously with continuous:true, requiring a restart from inside the handler.
+  const shouldListenRef = useRef(false);
+
+  useEffect(() => {
+    const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    setVoiceSupported(!!SR);
+  }, []);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -138,10 +149,12 @@ export default function QueryChat({ fileId, chatId, onChatStarted, onQueryDone }
       }
 
       const queryType = data.query_type || "aggregation";
+      // Use backend's natural language summary if available, else build one
+      const summaryText = data.summary || buildSummaryText(queryType, data);
       setMessages((p) =>
         p.map((m) =>
           m.loading
-            ? { ...m, loading: false, text: buildSummaryText(queryType, data),
+            ? { ...m, loading: false, text: summaryText,
                 intent: data.intent, result: data.result,
                 suggestions: data.suggestions, recommendation: data.recommendation,
                 records: data.records, queryType }
@@ -177,6 +190,71 @@ export default function QueryChat({ fileId, chatId, onChatStarted, onQueryDone }
     if (rows.length > 1) return `Here's the ${metric} of ${field} breakdown:`;
     if (result?.message) return result.message;
     return "Here are the results:";
+  }
+
+  function startVoice() {
+    const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SR) return;
+
+    shouldListenRef.current = true;
+    setIsListening(true);
+
+    function createAndStart() {
+      const rec = new SR();
+      rec.continuous      = true;
+      rec.interimResults  = true;
+      rec.lang            = "en-US";
+      rec.maxAlternatives = 1;
+
+      rec.onstart = () => setIsListening(true);
+
+      // Chrome often fires onend after ~1s even with continuous:true.
+      // Auto-restart if we still intend to listen.
+      rec.onend = () => {
+        if (shouldListenRef.current) {
+          try { createAndStart(); } catch {}
+        } else {
+          setIsListening(false);
+        }
+      };
+
+      rec.onerror = (e: any) => {
+        if (e.error === "not-allowed" || e.error === "permission-denied") {
+          shouldListenRef.current = false;
+          setIsListening(false);
+          alert("Microphone access denied. Please enable microphone access in your browser settings and try again.");
+        } else if (e.error === "aborted") {
+          // Expected when we call .stop() ourselves — ignore
+        } else {
+          console.warn("Speech recognition error:", e.error);
+        }
+      };
+
+      rec.onresult = (e: any) => {
+        // Rebuild full transcript from all accumulated results each time
+        let transcript = "";
+        for (let i = 0; i < e.results.length; i++) {
+          transcript += e.results[i][0].transcript;
+        }
+        setInput(transcript);
+        autoResize();
+      };
+
+      recognitionRef.current = rec;
+      try { rec.start(); } catch (err) {
+        console.error("SpeechRecognition start failed:", err);
+        shouldListenRef.current = false;
+        setIsListening(false);
+      }
+    }
+
+    createAndStart();
+  }
+
+  function stopVoice() {
+    shouldListenRef.current = false;
+    try { recognitionRef.current?.stop(); } catch {}
+    setIsListening(false);
   }
 
   /* ── No file uploaded ── */
@@ -266,9 +344,41 @@ export default function QueryChat({ fileId, chatId, onChatStarted, onQueryDone }
                 sendQuery(input);
               }
             }}
-            placeholder="Ask a question about your data…"
+            placeholder={isListening ? "🎤 Listening…" : "Ask anything about your data…"}
             disabled={loading}
           />
+
+          {/* Mic button — Web Speech API, no API key, completely free */}
+          {voiceSupported && (
+            <button
+              onClick={isListening ? stopVoice : startVoice}
+              disabled={loading}
+              title={isListening ? "Click to stop recording and send" : "Click to speak your question"}
+              style={{
+                width: 34, height: 34, borderRadius: "var(--r-md)", border: "none",
+                flexShrink: 0, cursor: loading ? "not-allowed" : "pointer",
+                display: "flex", alignItems: "center", justifyContent: "center",
+                background: isListening ? "var(--error)" : "var(--surface-2)",
+                color: isListening ? "white" : "var(--text-2)",
+                transition: "all 0.15s",
+                boxShadow: isListening ? "0 0 0 4px rgba(239,68,68,0.2)" : "none",
+              }}
+            >
+              {isListening ? (
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor">
+                  <rect x="6" y="6" width="12" height="12" rx="2"/>
+                </svg>
+              ) : (
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
+                  <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+                  <line x1="12" y1="19" x2="12" y2="23"/>
+                  <line x1="8" y1="23" x2="16" y2="23"/>
+                </svg>
+              )}
+            </button>
+          )}
+
           <button
             className="send-btn"
             onClick={() => sendQuery(input)}
@@ -289,7 +399,10 @@ export default function QueryChat({ fileId, chatId, onChatStarted, onQueryDone }
           </button>
         </div>
 
-        <p className="input-hint">Enter to send · Shift+Enter for new line</p>
+        <p className="input-hint">
+          Enter to send · Shift+Enter for new line
+          {voiceSupported && " · 🎤 Click mic to speak"}
+        </p>
       </div>
     </div>
   );
@@ -331,20 +444,21 @@ function MessageRow({ msg }: { msg: Message }) {
             <div className="msg-bubble">
               <FormattedText text={msg.text} />
             </div>
-            {msg.intent && <IntentPills intent={msg.intent} />}
+            {/* Intent pills only make sense for data queries, not general answers */}
+            {msg.intent && msg.queryType !== "general" && <IntentPills intent={msg.intent} />}
             {(msg.queryType === "aggregation" || msg.queryType === "both") && msg.result && (
               <DynamicRenderer msg={msg} />
             )}
             {msg.queryType === "list_records" && (
               <DynamicRenderer msg={msg} />
             )}
-            {/* "suggestion" = standalone, "both" = paired with aggregation data */}
             {(msg.queryType === "suggestion" || msg.queryType === "both") && msg.suggestions && (
               <SuggestionCards suggestions={msg.suggestions} />
             )}
             {msg.queryType === "recommendation" && msg.recommendation && (
               <RecommendationCard recommendation={msg.recommendation} />
             )}
+            {/* general: just the text bubble — no data cards needed */}
           </>
         )}
       </div>
@@ -366,11 +480,18 @@ function FormattedText({ text }: { text: string }) {
 }
 
 function IntentPills({ intent }: { intent: any }) {
+  // Don't show pills for suggestion/general responses — they're not field-specific queries
+  const skipTypes = ["suggestion", "both", "recommendation", "general"];
+  if (!intent || skipTypes.includes(intent.action)) return null;
+
   const pills: string[] = [];
-  if (intent.metric) pills.push(intent.metric);
-  if (intent.field)  pills.push(intent.field.replace(/_/g, " "));
-  if (intent.group_by) pills.push(`by ${intent.group_by}`);
+  // Only show metric if there's also a real field — avoids orphaned "sum" pills
+  const hasRealField = intent.field && intent.field !== "None" && intent.field !== "unknown";
+  if (intent.metric && hasRealField) pills.push(intent.metric);
+  if (hasRealField) pills.push(intent.field.replace(/_/g, " "));
+  if (intent.group_by) pills.push(`by ${String(intent.group_by).replace(/_/g, " ").replace(/\w+\((.+)\)/, "$1")}`);
   if (!pills.length) return null;
+
   return (
     <div className="intent-pills">
       {pills.map((p) => (
