@@ -1,5 +1,12 @@
+"""
+query.py
+
+Main query router — downloads data, extracts intent, dispatches to the
+correct service, saves history, returns a unified response to the frontend.
+"""
+from __future__ import annotations
+
 from fastapi import APIRouter, HTTPException, Header
-from pydantic import BaseModel
 import pandas as pd
 import os
 
@@ -8,144 +15,214 @@ from app.repositories.history_repo import save_history_entry, get_chat_messages
 from app.services.intent_service import extract_intent
 from app.services.aggregation_service import run_aggregation
 from app.services.suggestion_service import generate_suggestions, generate_product_recommendation
+from app.services.retrieval_service import run_retrieval
 from app.utils.file_utils import download_from_s3
 from app.utils.auth_utils import decode_token
-from app.services.retrieval_service import run_retrieval
 from app.models.schemas import QueryRequest
 
 router = APIRouter()
 
-def get_local_csv(s3_path: str) -> str:
-    return download_from_s3(s3_path)
+# ── Query type → frontend label mapping ──────────────────────────
+# "both" = return aggregation numbers AND AI suggestions together
+QUERY_TYPE_MAP: dict[str, str] = {
+    "metadata":  "metadata",
+    "recommend": "recommendation",
+    "suggest":   "both",         # ← aggregation data + suggestion cards
+    "list":      "list_records",
+    "aggregate": "aggregation",
+    "chat":      "chat",         # ← ADD THIS LINE
+}
+
+
+def _build_history_context(user_id: str, chat_id: str) -> list[dict]:
+    """
+    Return the last 3 conversation turns as structured dicts:
+      [{"question": str, "intent": dict}, ...]
+
+    This gives the intent LLM full context for resolving follow-up questions.
+    """
+    try:
+        past = get_chat_messages(user_id, chat_id)[-3:]
+        return [
+            {
+                "question": msg.get("question", ""),
+                "intent":   msg.get("response", {}).get("intent", {}),
+            }
+            for msg in past
+        ]
+    except Exception as exc:
+        print(f"[QUERY] Could not load history: {exc}")
+        return []
+
+
+def _get_column_values(df: pd.DataFrame, semantic_mapping: dict) -> dict:
+    """
+    Build a {semantic_key: [sample values]} dict for categorical columns.
+    Used by the intent LLM to resolve filter values accurately.
+    """
+    column_values: dict[str, list] = {}
+    for actual_col, semantic_key in semantic_mapping.items():
+        if actual_col in df.columns and df[actual_col].dtype == object:
+            column_values[semantic_key] = (
+                df[actual_col].dropna().unique().tolist()[:50]
+            )
+    return column_values
+
+
+# ─────────────────────────────────────────────────────────────────
+# Route
+# ─────────────────────────────────────────────────────────────────
 
 @router.post("/query")
 def query_dataset(request: QueryRequest, authorization: str = Header(None)):
+
+    # ── 1. Load dataset metadata ──────────────────────────────────
     dataset = get_dataset(request.file_id)
-
     if not dataset:
-        raise HTTPException(status_code=404, detail="Dataset not found")
+        raise HTTPException(status_code=404, detail="Dataset not found.")
     if not dataset.get("semantic_mapping"):
-        raise HTTPException(status_code=400, detail="Mapping not generated. Call /mapping first.")
+        raise HTTPException(
+            status_code=400,
+            detail="Semantic mapping not yet generated. Call /mapping first.",
+        )
 
-    s3_path = dataset["file_path"]
-    local_path = None
-    
+    local_path: str | None = None
+
     try:
-        # ── 1. Download the file EXACTLY ONCE ──────────────────────────────
-        local_path = get_local_csv(s3_path)
+        # ── 2. Download CSV exactly once ──────────────────────────
+        local_path = download_from_s3(dataset["file_path"])
         df = pd.read_csv(local_path)
-        
-        # ── 2. Extract column values ───────────────────────────────────────
-        column_values = {}
-        for actual_col, semantic_key in dataset["semantic_mapping"].items():
-            if actual_col in df.columns and df[actual_col].dtype == object:
-                column_values[semantic_key] = df[actual_col].dropna().unique().tolist()[:50]
 
-        # 👇 3. Fetch Recent Chat History ───────────────────────────────────
-        history_text = "No previous history."
+        # ── 3. Build column-values context ────────────────────────
+        column_values = _get_column_values(df, dataset["semantic_mapping"])
+
+        # ── 4. Build structured chat history ──────────────────────
+        chat_history: list[dict] = []
+        user_id: str | None = None
+
         if authorization and authorization.startswith("Bearer "):
             token = authorization.split(" ")[1]
             user_id = decode_token(token)
             if user_id and request.chat_id:
-                # Grab the last 4 interactions (to save tokens)
-                past_messages = get_chat_messages(user_id, request.chat_id)[-4:]
-                if past_messages:
-                    history_lines = []
-                    for msg in past_messages:
-                        history_lines.append(f"User: {msg.get('question')}")
-                        past_intent = msg.get("response", {}).get("intent", {})
-                        past_action = past_intent.get("action", "unknown")
-                        past_metric = past_intent.get("metric", "none")
-                        past_field = past_intent.get("field", "none")
-                        
-                        history_lines.append(f"AI previously performed action: {past_action} on field: {past_field} with metric: {past_metric}")
-                    history_text = "\n".join(history_lines)
+                chat_history = _build_history_context(user_id, request.chat_id)
 
-        
-
-       # ── 4. Extract intent ──────────────────────────────────────────────
+        # ── 5. Extract intent ─────────────────────────────────────
         if getattr(request, "intent_override", None):
-            # Bypass the LLM entirely for the Dashboard! Lightning fast.
-            intent = request.intent_override 
+            # Dashboard fast-path: bypass LLM entirely
+            intent = request.intent_override
         else:
-            # Use the normal chat flow (and pass the history_text so it remembers!)
-            intent = extract_intent(request.question, dataset["semantic_mapping"], column_values, history_text)
-            
-        action = intent.get("action", "aggregate")
-        
-        frontend_query_type_map = {
-            "metadata": "metadata",
-            "recommend": "recommendation",
-            "suggest": "suggestion",
-            "list": "list_records",
-            "aggregate": "aggregation"
-        }
-        frontend_type = frontend_query_type_map.get(action, "aggregation")
-        final_response = None
+            intent = extract_intent(
+                question        = request.question,
+                semantic_mapping= dataset["semantic_mapping"],
+                column_values   = column_values,
+                chat_history    = chat_history,
+            )
 
-        # ── 4. Route to the correct service ────────────────────────────────
+        action     = intent.get("action", "aggregate")
+        query_type = QUERY_TYPE_MAP.get(action, "aggregation")
+
+        # ── 6. Route to service ───────────────────────────────────
+        final_response: dict
+
         if action == "metadata":
             final_response = {
-                "intent": intent,
-                "query_type": frontend_type,
+                "intent":     intent,
+                "query_type": query_type,
                 "result": {
-                    "columns": dataset.get("columns", []),
-                    "column_types": dataset.get("column_types", {})
-                }
+                    "columns":      dataset.get("columns", []),
+                    "column_types": dataset.get("column_types", {}),
+                },
             }
 
         elif action == "recommend":
-            # 👇 Add request.language and request.complexity
             recommendation = generate_product_recommendation(
-                request.question, local_path, dataset["semantic_mapping"], request.language, request.complexity
+                request.question,
+                local_path,
+                dataset["semantic_mapping"],
+                request.language,
+                request.complexity,
             )
             final_response = {
-                "intent": intent,
-                "query_type": frontend_type,
-                "recommendation": recommendation
+                "intent":         intent,
+                "query_type":     query_type,
+                "recommendation": recommendation,
             }
 
         elif action == "suggest":
+            # Always run aggregation first so the LLM has actual numbers
             result = run_aggregation(local_path, dataset["semantic_mapping"], intent)
-            # 👇 Add request.language and request.complexity
             suggestions = generate_suggestions(
-                request.question, intent, result, request.language, request.complexity
+                request.question,
+                intent,
+                result,
+                request.language,
+                request.complexity,
             )
             final_response = {
-                "intent": intent,
-                "query_type": frontend_type,
-                "suggestions": suggestions
+                "intent":      intent,
+                "query_type":  "both",   # Front-end renders data table + suggestion cards
+                "result":      result,
+                "suggestions": suggestions,
             }
-            
+
         elif action == "list":
             records = run_retrieval(local_path, dataset["semantic_mapping"], intent)
             final_response = {
-                "intent": intent,
-                "query_type": frontend_type,
-                "records": records
+                "intent":     intent,
+                "query_type": query_type,
+                "records":    records,
             }
 
-        else:  # action == "aggregate"
-            result = run_aggregation(local_path, dataset["semantic_mapping"], intent)
+        # ── Conversational Chat ────────────────────────────────────────────
+        elif action == "chat":
+            from app.services.llm_service import call_llm_text
+            
+            chat_prompt = (
+                f"You are QueryMind, a helpful AI data analyst. "
+                f"The user asked a general question: '{request.question}'. "
+                f"Respond concisely and naturally. If they ask about your capabilities, "
+                f"mention you can aggregate metrics, create charts, give business suggestions, "
+                f"and recommend products based on their uploaded CSV data."
+            )
+            
+            reply = call_llm_text(chat_prompt, expect_json=False)
             final_response = {
                 "intent": intent,
-                "query_type": frontend_type,
-                "result": result
+                "query_type": query_type,  # ← CHANGE THIS from frontend_type to query_type
+                "result": {"message": reply}
             }
 
-        # ── 5. Save history if logged in ───────────────────────────────────
-        if authorization and authorization.startswith("Bearer "):
-            token = authorization.split(" ")[1]
-            user_id = decode_token(token)
-            if user_id:
-                save_history_entry(user_id, request.file_id, request.chat_id, request.question, final_response)
-                
+        else:  # aggregate (default)
+            result = run_aggregation(local_path, dataset["semantic_mapping"], intent)
+            final_response = {
+                "intent":     intent,
+                "query_type": query_type,
+                "result":     result,
+            }
+
+        # ── 7. Persist to history ─────────────────────────────────
+        if user_id:
+            save_history_entry(
+                user_id,
+                request.file_id,
+                request.chat_id,
+                request.question,
+                final_response,
+            )
+
         return final_response
 
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Query processing failed: {str(e)}")
+    except HTTPException:
+        raise
+
+    except Exception as exc:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Query processing failed: {str(exc)}",
+        )
 
     finally:
-        # ── 6. Clean up EXACTLY ONCE ───────────────────────────────────────
         if local_path and os.path.exists(local_path):
             os.remove(local_path)

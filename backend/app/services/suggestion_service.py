@@ -1,71 +1,83 @@
+"""
+suggestion_service.py
+
+Generates AI-powered business suggestions and product/category recommendations
+using the smart LLM model.
+"""
+from __future__ import annotations
+
 import pandas as pd
 from app.services.llm_service import call_llm_text
 
 
-# ─────────────────────────────────────────────
-# General business suggestions (for "both" / "suggestion" queries)
-# ─────────────────────────────────────────────
-def generate_suggestions(question: str, intent: dict, result: dict, language: str = "English", complexity: str = "Executive") -> list:
+# ─────────────────────────────────────────────────────────────────
+# General business suggestions  (action = "suggest")
+# ─────────────────────────────────────────────────────────────────
+
+def generate_suggestions(
+    question: str,
+    intent: dict,
+    result: dict,
+    language: str = "English",
+    complexity: str = "Executive",
+) -> list:
     results = result.get("results", [])
     if not results:
         return []
 
     result_summary = _summarize_result(intent, results)
-    field = intent.get("field", "").replace("_", " ")
+    field  = intent.get("field", "").replace("_", " ")
     metric = intent.get("metric", "")
 
-    prompt = f"""
-You are a senior business strategist.
+    prompt = f"""You are a senior business strategist advising a small/medium enterprise owner.
 
-User asked: "{question}"
-Metric: {metric} of {field}
-Data:
+User's business question: "{question}"
+Metric analysed: {metric} of {field}
+
+Data summary:
 {result_summary}
 
-LANGUAGE & COMPLEXITY SETTINGS:
-- Output Language: {language}
-- Explanation Style: {complexity}
-- CRITICAL RULE: If the style is "Simple", DO NOT omit any details, metrics, or numbers. You must explain the exact same data using easier-to-understand terms and analogies.
-- CRITICAL RULE 2: Ensure ALL JSON keys remain exactly as written below in English. ONLY translate the content values.
+OUTPUT LANGUAGE: {language}
+EXPLANATION STYLE: {complexity}
 
-Generate exactly 3 business suggestions. Each must be:
-- Based directly on the actual numbers
-- Specific — mention real values from the data
-- Include a step-by-step execution plan
-- Include expected impact with estimated numbers
+CRITICAL RULES:
+1. Every suggestion MUST reference specific numbers from the data above.
+2. If style is "Simple", use plain language + analogies, but keep ALL numbers.
+3. ALL JSON keys must remain in English. Only translate values/text fields.
+4. Be actionable — vague advice is useless to an SME owner.
 
-Return a JSON array of exactly 3 objects:
+Generate exactly 3 prioritised business suggestions. Return a JSON array:
 [
   {{
-    "title": "5-8 word title",
-    "insight": "1-2 sentences on what the data shows",
-    "action": "Core recommendation in 1 sentence",
+    "title":          "5-8 word punchy title",
+    "insight":        "What the data specifically reveals (1-2 sentences, cite numbers)",
+    "action":         "The single most important action to take right now",
     "execution_plan": [
-      "Step 1: specific action with timeline",
-      "Step 2: specific action with timeline",
-      "Step 3: specific action with timeline"
+      "Step 1: [specific action] by [timeline]",
+      "Step 2: [specific action] by [timeline]",
+      "Step 3: [specific action] by [timeline]"
     ],
-    "expected_impact": "Specific outcome with estimated numbers",
-    "priority": "high | medium | low"
+    "expected_impact": "Quantified outcome: e.g. 'Estimated 15-20% revenue uplift in 90 days'",
+    "priority":        "high | medium | low"
   }}
 ]
 
-JSON only. No markdown.
-"""
+Order by priority (high first). JSON only. No markdown."""
 
     try:
         suggestions = call_llm_text(prompt, expect_json=True)
         if isinstance(suggestions, list):
             return suggestions[:3]
         return []
-    except Exception:
+    except Exception as exc:
+        print(f"[SUGGEST] Failed: {exc}")
         return []
 
 
-# ─────────────────────────────────────────────
-# Product / category recommendation
-# (for "which product should I choose" type queries)
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────
+# Product / category recommendation  (action = "recommend")
+# ─────────────────────────────────────────────────────────────────
+
 def generate_product_recommendation(
     question: str,
     file_path: str,
@@ -74,136 +86,125 @@ def generate_product_recommendation(
     complexity: str = "Executive",
 ) -> dict:
     """
-    Reads the actual CSV, computes per-product metrics,
-    ranks them, and returns structured recommendations.
+    Reads the CSV, computes composite per-product scores,
+    and asks the LLM for ranked recommendations.
     """
-
     try:
         df = pd.read_csv(file_path)
-    except Exception as e:
-        return {"error": f"Could not read data: {str(e)}"}
+    except Exception as exc:
+        return {"error": f"Could not read data: {exc}"}
 
-    # Find the product/category column and revenue/profit column from mapping
     reverse = {v: k for k, v in semantic_mapping.items()}
 
-    product_col = _find_col(reverse, ["item_type", "product", "product_name", "category", "item"])
-    revenue_col = _find_col(reverse, ["total_revenue", "revenue", "price", "sales"])
-    profit_col  = _find_col(reverse, ["total_profit", "profit"])
-    units_col   = _find_col(reverse, ["units_sold", "quantity", "units"])
+    product_col = _find_col(reverse, ["item_type", "product", "product_name", "category", "item", "item_name"])
+    revenue_col = _find_col(reverse, ["total_revenue", "revenue", "price", "sales", "gross_sales"])
+    profit_col  = _find_col(reverse, ["total_profit", "profit", "net_profit", "margin"])
+    units_col   = _find_col(reverse, ["units_sold", "quantity", "units", "qty"])
 
     if not product_col:
         return {"error": "No product or category column found in the dataset."}
-
     if product_col not in df.columns:
         return {"error": f"Column '{product_col}' not found in CSV."}
 
-    # Build per-product stats
+    # ── Per-product stats ─────────────────────────────────────────
     group = df.groupby(product_col)
-    stats = {}
+    stats: dict[str, pd.Series] = {"order_count": group.size()}
 
-    if revenue_col and revenue_col in df.columns:
-        df[revenue_col] = pd.to_numeric(df[revenue_col], errors="coerce")
-        stats["total_revenue"] = group[revenue_col].sum()
-        stats["avg_revenue"]   = group[revenue_col].mean()
+    def add_numeric_stat(col: str | None, key_prefix: str) -> None:
+        if col and col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+            stats[f"total_{key_prefix}"] = group[col].sum()
+            stats[f"avg_{key_prefix}"]   = group[col].mean()
 
-    if profit_col and profit_col in df.columns:
-        df[profit_col] = pd.to_numeric(df[profit_col], errors="coerce")
-        stats["total_profit"] = group[profit_col].sum()
+    add_numeric_stat(revenue_col, "revenue")
+    add_numeric_stat(profit_col,  "profit")
+    add_numeric_stat(units_col,   "units")
 
-    if units_col and units_col in df.columns:
-        df[units_col] = pd.to_numeric(df[units_col], errors="coerce")
-        stats["total_units"] = group[units_col].sum()
-
-    stats["order_count"] = group.size()
-
-    if not stats:
+    if len(stats) <= 1:
         return {"error": "No numeric columns found to rank products."}
 
     summary_df = pd.DataFrame(stats).fillna(0)
 
-    # Normalize and compute a composite score
-    for col in summary_df.columns:
+    # ── Composite score (normalised mean across all stats) ─────────
+    for col in list(summary_df.columns):
         col_max = summary_df[col].max()
-        if col_max > 0:
-            summary_df[f"_norm_{col}"] = summary_df[col] / col_max
-        else:
-            summary_df[f"_norm_{col}"] = 0
+        summary_df[f"_n_{col}"] = summary_df[col] / col_max if col_max > 0 else 0.0
 
-    norm_cols = [c for c in summary_df.columns if c.startswith("_norm_")]
+    norm_cols = [c for c in summary_df.columns if c.startswith("_n_")]
     summary_df["score"] = summary_df[norm_cols].mean(axis=1) * 100
-
     summary_df = summary_df.sort_values("score", ascending=False)
 
-    # Build readable product data for LLM
+    # ── Format for LLM ────────────────────────────────────────────
     products_text = ""
     for product, row in summary_df.head(10).iterrows():
-        line = f"\n  Product: {product} | Score: {row['score']:.1f}/100"
+        line = f"\n  • {product} | Score: {row['score']:.1f}/100"
         if "total_revenue" in row: line += f" | Revenue: {row['total_revenue']:,.0f}"
-        if "total_profit"  in row: line += f" | Profit: {row['total_profit']:,.0f}"
-        if "total_units"   in row: line += f" | Units: {row['total_units']:,.0f}"
-        if "order_count"   in row: line += f" | Orders: {row['order_count']:,.0f}"
+        if "total_profit"  in row: line += f" | Profit:  {row['total_profit']:,.0f}"
+        if "total_units"   in row: line += f" | Units:   {row['total_units']:,.0f}"
+        if "order_count"   in row: line += f" | Orders:  {row['order_count']:,.0f}"
         products_text += line
 
-    prompt = f"""
-You are a senior business analyst. A user asked: "{question}"
+    prompt = f"""You are a senior business analyst advising an SME owner.
 
-Here are the top products ranked by a composite score (revenue + profit + units + orders):
+User question: "{question}"
+
+Products ranked by composite score (revenue + profit + units + order volume):
 {products_text}
 
-LANGUAGE & COMPLEXITY SETTINGS:
-- Output Language: {language}
-- Explanation Style: {complexity}
-- CRITICAL RULE: If the style is "Simple", DO NOT omit any details, metrics, or numbers. You must explain the exact same data using easier-to-understand terms and analogies.
-- CRITICAL RULE 2: Ensure ALL JSON keys remain exactly as written below in English. ONLY translate the content values.
+OUTPUT LANGUAGE: {language}
+EXPLANATION STYLE: {complexity}
 
-Here are the top products ranked by a composite score (revenue + profit + units + orders):
-{products_text}
+CRITICAL RULES:
+1. Cite actual numbers (score, revenue, profit) in every "why" explanation.
+2. If style is "Simple", use analogies but keep all numbers.
+3. ALL JSON keys stay in English — only translate text values.
+4. Be specific about WHY each product ranks where it does.
 
-Based on this data, provide:
-1. The TOP 3 recommended products with full reasoning
-2. For each product, explain WHY it's recommended using the actual numbers
-3. A suggestion on what to do with the #1 product
-
-Return JSON:
+Return the top 3 products. JSON:
 {{
   "ranked_products": [
     {{
       "rank": 1,
       "product": "<name>",
       "score": <number>,
-      "why": "2-3 sentences explaining why this product is recommended using actual numbers",
-      "long_term_outlook": "1-2 sentences on long-term potential",
-      "suggested_action": "Specific action to take for this product",
+      "why": "2-3 sentences citing actual numbers explaining the ranking",
+      "long_term_outlook": "Trend / sustainability analysis in 1-2 sentences",
+      "suggested_action": "Single most important action for this product",
       "execution_plan": [
-        "Step 1: specific action with timeline",
-        "Step 2: specific action with timeline",
-        "Step 3: specific action with timeline"
+        "Step 1: [action] by [timeline]",
+        "Step 2: [action] by [timeline]",
+        "Step 3: [action] by [timeline]"
       ],
       "priority": "high | medium | low"
     }}
   ],
   "top_pick": "<product name>",
-  "top_pick_reason": "1 sentence summary of why this is the best long-term choice"
+  "top_pick_reason": "One sentence on why this is the best long-term bet"
 }}
 
-JSON only. No markdown.
-"""
+JSON only. No markdown."""
 
     try:
         result = call_llm_text(prompt, expect_json=True)
         if isinstance(result, dict):
-            # Also attach raw stats for frontend display
-            result["raw_stats"] = summary_df.head(10)[
-                [c for c in summary_df.columns if not c.startswith("_norm_")]
-            ].reset_index().to_dict(orient="records")
+            # Attach raw stats for transparency in the frontend
+            display_cols = [c for c in summary_df.columns if not c.startswith("_n_")]
+            result["raw_stats"] = (
+                summary_df.head(10)[display_cols]
+                .reset_index()
+                .to_dict(orient="records")
+            )
             return result
         return {"error": "LLM returned unexpected format"}
-    except Exception as e:
-        return {"error": str(e)}
+    except Exception as exc:
+        return {"error": str(exc)}
 
 
-def _find_col(reverse_mapping: dict, candidates: list):
-    """Find the first matching actual column from a list of semantic key candidates."""
+# ─────────────────────────────────────────────────────────────────
+# Helpers
+# ─────────────────────────────────────────────────────────────────
+
+def _find_col(reverse_mapping: dict, candidates: list[str]) -> str | None:
     for key in candidates:
         if key in reverse_mapping:
             return reverse_mapping[key]
@@ -211,31 +212,50 @@ def _find_col(reverse_mapping: dict, candidates: list):
 
 
 def _summarize_result(intent: dict, results: list) -> str:
+    """
+    Build a human-readable data summary for LLM context.
+    Handles single values, time-series ("period" key), and categorical ("group" key).
+    """
+    field  = intent.get("field", "value").replace("_", " ")
+    metric = intent.get("metric", "")
+
+    # ── Single value ──────────────────────────────────────────────
     if len(results) == 1 and "value" in results[0]:
-        field = intent.get("field", "value").replace("_", " ")
-        metric = intent.get("metric", "")
-        val = results[0]["value"]
+        val     = results[0]["value"]
         filters = intent.get("filters", [])
-        filter_str = ""
-        if filters:
-            filter_str = " for " + ", ".join(f"{f['field']} = {f['value']}" for f in filters)
+        filter_str = (
+            " (filtered by " + ", ".join(
+                f"{f['field']} {f['operator']} {f['value']}" for f in filters
+            ) + ")"
+            if filters else ""
+        )
         return f"{metric} of {field}{filter_str} = {val:,.2f}"
 
+    # ── Multi-row (time or categorical) ───────────────────────────
     values = [r.get("value", 0) for r in results]
-    total = sum(values)
-    avg = total / len(values) if values else 0
+    total  = sum(values)
+    avg    = total / len(values) if values else 0
+
     lines = [
-        f"Total: {total:,.2f} | Average: {avg:,.2f} | "
+        f"Total: {total:,.2f} | Average per group: {avg:,.2f} | "
         f"Max: {max(values):,.2f} | Min: {min(values):,.2f}",
-        "", "Breakdown:"
+        "",
+        "Breakdown (top 20 shown):",
     ]
+
     sorted_rows = sorted(results, key=lambda r: r.get("value", 0), reverse=True)
     for row in sorted_rows[:20]:
+        # Support "period", "group", "month", "category", "region" label keys
         label = (
-            row.get("month") or row.get("category") or row.get("region")
-            or row.get("group") or next((v for v in row.values() if isinstance(v, str)), "?")
+            row.get("period")
+            or row.get("group")
+            or row.get("month")
+            or row.get("category")
+            or row.get("region")
+            or next((v for v in row.values() if isinstance(v, str)), "?")
         )
-        pct = (row.get("value", 0) / total * 100) if total > 0 else 0
-        lines.append(f"  {label}: {row.get('value', 0):,.2f} ({pct:.1f}%)")
+        val = row.get("value", 0)
+        pct = (val / total * 100) if total > 0 else 0
+        lines.append(f"  {label}: {val:,.2f} ({pct:.1f}%)")
 
     return "\n".join(lines)

@@ -97,38 +97,45 @@ STRICT RULES:
 
 2. Derive the key directly from the column name using snake_case.
    Examples:
-   - "Total Revenue"   → "total_revenue"
-   - "Total Cost"      → "total_cost"
-   - "Total Profit"    → "total_profit"
-   - "Order Date"      → "transaction_date"
-   - "Ship Date"       → "ship_date"
-   - "Order ID"        → "order_id"
-   - "Units Sold"      → "units_sold"
-   - "Unit Price"      → "unit_price"
-   - "Unit Cost"       → "unit_cost"
-   - "Sales Channel"   → "sales_channel"
-   - "Order Priority"  → "order_priority"
-   - "Item Type"       → "item_type"
-   - "Region"          → "region"
-   - "Country"         → "country"
+   - "Total Revenue"      → "total_revenue"
+   - "Total Cost"         → "total_cost"
+   - "Total Profit"       → "total_profit"
+   - "Order Date"         → "transaction_date"
+   - "Ship Date"          → "ship_date"
+   - "Order ID"           → "order_id"
+   - "Units Sold"         → "units_sold"
+   - "Unit Price"         → "unit_price"
+   - "Unit Cost"          → "unit_cost"
+   - "Sales Channel"      → "sales_channel"
+   - "Order Priority"     → "order_priority"
+   - "Item Type"          → "item_type"
+   - "Region"             → "region"
+   - "Country"            → "country"
+   - "Actual Price"       → "actual_price"
+   - "Discounted Price"   → "discounted_price"
+   - "Rating Count"       → "rating_count"
+   - "Review Count"       → "review_count"
+   - "Discount Percent"   → "discount_percent"
 
-3. NEVER use generic keys like "revenue", "cost", "profit", "price", "expense", "amount".
-   Always use the FULL specific snake_case key from the column name.
+3. NEVER use generic keys like "revenue", "cost", "profit", "price", "expense", "amount" alone.
+   Always use the FULL specific snake_case key from the column name:
    - "Total Revenue" → "total_revenue"   NOT "revenue"
    - "Total Cost"    → "total_cost"      NOT "cost"
    - "Total Profit"  → "total_profit"    NOT "profit"
    - "Unit Price"    → "unit_price"      NOT "price"
-   - "Unit Cost"     → "unit_cost"       NOT "cost"
 
-4. Exception — only use a shared/generic key if there is truly ONLY ONE column of that type
-   and its name is generic (e.g. a column literally named "Revenue" with no prefix):
-   - Single date column → "transaction_date"
-   - Single region column → "region"
-   - Single quantity column → "quantity"
+4. NEVER append technical suffixes to keys. These are all FORBIDDEN:
+   - _numeric, _num, _value, _val, _col, _field, _data, _clean, _processed, _raw
+   Example: "Actual Price" → "actual_price" NOT "actual_price_numeric"
 
-5. NEVER assign the same key to two different columns.
+5. Exception — use a shorter key ONLY when the column name itself is already generic
+   and it's the ONLY column of that type:
+   - A column literally named "Revenue" (no prefix) → "revenue" is acceptable
+   - A single date column → "transaction_date"
 
-6. Return a flat JSON object. JSON only. No markdown. No explanation.
+6. NEVER assign the same key to two different columns.
+
+7. Return a flat JSON object. JSON only. No markdown. No explanation.
 
 Example output:
 {{
@@ -145,7 +152,9 @@ Example output:
   "Unit Cost": "unit_cost",
   "Total Revenue": "total_revenue",
   "Total Cost": "total_cost",
-  "Total Profit": "total_profit"
+  "Total Profit": "total_profit",
+  "Actual Price": "actual_price",
+  "Discounted Price": "discounted_price"
 }}
 """
 

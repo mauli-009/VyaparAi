@@ -338,7 +338,8 @@ function MessageRow({ msg }: { msg: Message }) {
             {msg.queryType === "list_records" && (
               <DynamicRenderer msg={msg} />
             )}
-            {msg.queryType === "suggestion" && msg.suggestions && (
+            {/* "suggestion" = standalone, "both" = paired with aggregation data */}
+            {(msg.queryType === "suggestion" || msg.queryType === "both") && msg.suggestions && (
               <SuggestionCards suggestions={msg.suggestions} />
             )}
             {msg.queryType === "recommendation" && msg.recommendation && (

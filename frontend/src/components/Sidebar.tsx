@@ -142,10 +142,18 @@ export default function Sidebar({
 
   function handleDeleteChat(e: React.MouseEvent, chatId: string) {
     e.stopPropagation();
+    // Optimistic UI update
     setHistory((prev) => prev.filter((h) => h.chat_id !== chatId));
     if (currentChatId === chatId) onNewChat();
     onDeleteChat?.(chatId);
-    // TODO: hook to backend DELETE /auth/chats/:chatId
+    // Backend delete (fire and forget — optimistic)
+    const jwt = localStorage.getItem("token");
+    if (jwt) {
+      fetch(`${API}/auth/chats/${chatId}`, {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${jwt}` },
+      }).catch((err) => console.error("[Sidebar] delete chat failed:", err));
+    }
   }
 
   function formatDate(dateStr: string) {

@@ -27,21 +27,28 @@ const tooltipStyle = {
 
 const axisStyle = { fontSize: 11, fill: "var(--text-3)" };
 
+/** Find the best X key (first string-ish column) and Y key (first numeric column). */
+function detectAxes(data: any[]): { xKey: string; yKey: string } {
+  const keys = Object.keys(data[0]);
+  const sample = data[0];
+  const yKey = keys.find((k) => typeof sample[k] === "number") ?? keys[keys.length - 1];
+  const xKey = keys.find((k) => k !== yKey && k !== "period_type") ?? keys[0];
+  return { xKey, yKey };
+}
+
 export function SmartBarChart({ data }: { data: any[] }) {
   if (!data || data.length === 0) return null;
-  const keys      = Object.keys(data[0]);
-  const xAxisKey  = keys[0];
-  const yAxisKey  = keys[1] || keys[0];
+  const { xKey, yKey } = detectAxes(data);
 
   return (
     <div style={chartWrap}>
       <ResponsiveContainer width="100%" height="100%">
         <BarChart data={data} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
           <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="var(--border)" />
-          <XAxis dataKey={xAxisKey} tick={axisStyle} axisLine={false} tickLine={false} />
+          <XAxis dataKey={xKey} tick={axisStyle} axisLine={false} tickLine={false} />
           <YAxis tick={axisStyle} axisLine={false} tickLine={false} />
           <Tooltip contentStyle={tooltipStyle} cursor={{ fill: "var(--brand-subtle)" }} />
-          <Bar dataKey={yAxisKey} fill="var(--brand)" radius={[5, 5, 0, 0]} barSize={42} />
+          <Bar dataKey={yKey} fill="var(--brand)" radius={[5, 5, 0, 0]} barSize={42} />
         </BarChart>
       </ResponsiveContainer>
     </div>
@@ -50,9 +57,7 @@ export function SmartBarChart({ data }: { data: any[] }) {
 
 export function SmartPieChart({ data }: { data: any[] }) {
   if (!data || data.length === 0) return null;
-  const keys     = Object.keys(data[0]);
-  const nameKey  = keys[0];
-  const valueKey = keys[1] || keys[0];
+  const { xKey, yKey } = detectAxes(data);
 
   return (
     <div style={chartWrap}>
@@ -60,8 +65,8 @@ export function SmartPieChart({ data }: { data: any[] }) {
         <PieChart>
           <Pie
             data={data}
-            dataKey={valueKey}
-            nameKey={nameKey}
+            dataKey={yKey}
+            nameKey={xKey}
             cx="50%"
             cy="50%"
             outerRadius={95}
@@ -83,21 +88,19 @@ export function SmartPieChart({ data }: { data: any[] }) {
 
 export function SmartLineChart({ data }: { data: any[] }) {
   if (!data || data.length === 0) return null;
-  const keys     = Object.keys(data[0]);
-  const xAxisKey = keys[0];
-  const yAxisKey = keys[1] || keys[0];
+  const { xKey, yKey } = detectAxes(data);
 
   return (
     <div style={chartWrap}>
       <ResponsiveContainer width="100%" height="100%">
         <LineChart data={data} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
           <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="var(--border)" />
-          <XAxis dataKey={xAxisKey} tick={axisStyle} axisLine={false} tickLine={false} />
+          <XAxis dataKey={xKey} tick={axisStyle} axisLine={false} tickLine={false} />
           <YAxis tick={axisStyle} axisLine={false} tickLine={false} />
           <Tooltip contentStyle={tooltipStyle} />
           <Line
             type="monotone"
-            dataKey={yAxisKey}
+            dataKey={yKey}
             stroke="var(--brand)"
             strokeWidth={2.5}
             dot={{ r: 3.5, fill: "var(--brand)", strokeWidth: 0 }}
@@ -111,17 +114,15 @@ export function SmartLineChart({ data }: { data: any[] }) {
 
 export function SmartScatterChart({ data }: { data: any[] }) {
   if (!data || data.length === 0) return null;
-  const keys     = Object.keys(data[0]);
-  const xAxisKey = keys[0];
-  const yAxisKey = keys[1] || keys[0];
+  const { xKey, yKey } = detectAxes(data);
 
   return (
     <div style={chartWrap}>
       <ResponsiveContainer width="100%" height="100%">
         <ScatterChart margin={{ top: 4, right: 8, bottom: 0, left: 0 }}>
           <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
-          <XAxis dataKey={xAxisKey} type="number" name={xAxisKey} tick={axisStyle} axisLine={false} tickLine={false} />
-          <YAxis dataKey={yAxisKey} type="number" name={yAxisKey} tick={axisStyle} axisLine={false} tickLine={false} />
+          <XAxis dataKey={xKey} type="number" name={xKey} tick={axisStyle} axisLine={false} tickLine={false} />
+          <YAxis dataKey={yKey} type="number" name={yKey} tick={axisStyle} axisLine={false} tickLine={false} />
           <Tooltip cursor={{ strokeDasharray: "3 3" }} contentStyle={tooltipStyle} />
           <Scatter name="Data Points" data={data} fill="var(--brand)" />
         </ScatterChart>

@@ -40,16 +40,30 @@ function SimpleTable({ data }: { data: any[] }) {
 }
 
 export default function DynamicRenderer({ msg }: { msg: any }) {
-  const intent = msg.intent || {};
-  const suggestedCharts = intent.suggested_charts || [];
+  const intent  = msg.intent || {};
   const rawData = msg.result?.results || msg.records || [];
 
-  const shouldDefaultToChart =
-    suggestedCharts.includes("scatter_chart") ||
-    (msg.queryType === "list_records" && suggestedCharts.length > 0);
+  // Infer chart type from data shape when the LLM didn't suggest one
+  function inferCharts(): string[] {
+    if (rawData.length === 0) return [];
+    const first = rawData[0];
+    if ("period" in first)   return ["line_chart", "bar_chart"];  // time-series
+    if ("group" in first ||
+        "category" in first ||
+        "region" in first)   return ["bar_chart", "pie_chart"];   // categorical
+    return [];
+  }
 
-  const defaultChart = suggestedCharts.length > 0 ? suggestedCharts[0] : null;
-  const [selectedChart, setSelectedChart] = useState<string | null>(shouldDefaultToChart ? defaultChart : null);
+  const suggestedCharts: string[] =
+    intent.suggested_charts?.length > 0 ? intent.suggested_charts : inferCharts();
+
+  // Auto-show chart for all grouped data (multiple rows)
+  const hasMultipleRows      = rawData.length > 1;
+  const shouldDefaultToChart = suggestedCharts.length > 0 && hasMultipleRows;
+
+  const [selectedChart, setSelectedChart] = useState<string | null>(
+    shouldDefaultToChart ? suggestedCharts[0] : null
+  );
   const [showData, setShowData] = useState<boolean>(!shouldDefaultToChart);
 
   if (!rawData || rawData.length === 0) return null;
@@ -77,7 +91,7 @@ export default function DynamicRenderer({ msg }: { msg: any }) {
               className={`view-toggle-btn${selectedChart === chart ? " is-active" : ""}`}
               onClick={() => { setShowData(false); setSelectedChart(chart); }}
             >
-              {chartLabels[chart] || chart.replace("_", " ")}
+              {chartLabels[chart] || chart.replace(/_/g, " ")}
             </button>
           ))}
         </div>
