@@ -14,3 +14,5 @@ def get_dashboard(file_id: str):
     # Remove the MongoDB _id before sending to frontend
     dashboard.pop("_id", None)
     return dashboard
+
+#this is dashboard route
