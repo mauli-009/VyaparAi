@@ -13,7 +13,9 @@ def run_retrieval(file_path: str, mapping: dict, intent: dict) -> list:
 
     # 2. Extract safely
     filters = intent.get("filters", intent.get("Filters", []))
-    limit = intent.get("limit", intent.get("Limit", 15))
+    limit = intent.get("limit", intent.get("Limit", 20))
+    if not limit:  # catches None and 0
+        limit = 20
     sort_by = intent.get("sort_by", intent.get("Sort_by"))
     order = intent.get("order", intent.get("Order", "desc"))
     
@@ -116,7 +118,7 @@ def run_retrieval(file_path: str, mapping: dict, intent: dict) -> list:
             df = df[actual_select_cols]
 
     # 6. Limit and safely clean NaNs
-    df = df.head(int(limit))
+    df = df.head(int(limit) if limit is not None else 20)
     df = df.fillna("")
     
     return df.to_dict(orient="records")

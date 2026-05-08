@@ -1,196 +1,231 @@
+"""query.py — main query router with natural language summaries"""
+from __future__ import annotations
 from fastapi import APIRouter, HTTPException, Header
-from pydantic import BaseModel
-import pandas as pd
-import os
+import pandas as pd, os
 
-from app.repositories.dataset_repo import get_dataset, add_cleaning_rule
+from app.repositories.dataset_repo import get_dataset
 from app.repositories.history_repo import save_history_entry, get_chat_messages
 from app.services.intent_service import extract_intent
 from app.services.aggregation_service import run_aggregation
 from app.services.suggestion_service import generate_suggestions, generate_product_recommendation
+from app.services.retrieval_service import run_retrieval
 from app.utils.file_utils import download_from_s3
 from app.utils.auth_utils import decode_token
-from app.services.retrieval_service import run_retrieval
 from app.models.schemas import QueryRequest
 
 router = APIRouter()
 
-def get_local_csv(s3_path: str) -> str:
-    return download_from_s3(s3_path)
+QUERY_TYPE_MAP = {
+    "metadata":  "metadata",
+    "recommend": "recommendation",
+    "suggest":   "both",
+    "list":      "list_records",
+    "aggregate": "aggregation",
+}
+
+
+def _fmt(v: float, field: str = "") -> str:
+    is_fin = any(kw in field.lower() for kw in ["revenue","profit","earning","income","sale","cost","expense","price","spend"])
+    if abs(v) >= 1_000_000:
+        s = f"{v/1_000_000:.2f}M"; return f"${s}" if is_fin else s
+    if abs(v) >= 1_000:
+        s = f"{v:,.0f}"; return f"${s}" if is_fin else s
+    return f"{v:,.2f}"
+
+
+def _label(row: dict) -> str:
+    return (row.get("period") or row.get("group") or row.get("month") or
+            row.get("category") or row.get("region") or row.get("country") or
+            next((str(v) for v in row.values() if isinstance(v,str)), "?"))
+
+
+def _build_summary(question: str, intent: dict, result: dict | None,
+                   query_type: str, records: list | None = None) -> str:
+    """
+    Generate a conversational natural-language answer bubble.
+    Template-based (no extra LLM call) — fast.
+    """
+    field    = (intent.get("field") or "").replace("_"," ")
+    metric   = intent.get("metric","sum")
+    filters  = intent.get("filters",[])
+    group_by = (intent.get("group_by") or "")
+    sort_by  = intent.get("sort_by")
+
+    # Build filter context string
+    def _filter_str():
+        if not filters: return ""
+        parts = []
+        for f in filters:
+            fn  = f.get("field","").replace("_"," ")
+            op  = f.get("operator","==")
+            val = f.get("value")
+            if op == "==":       parts.append(f"in **{val}**")
+            elif op == ">":      parts.append(f"where {fn} > **{val}**")
+            elif op == ">=":     parts.append(f"where {fn} ≥ **{val}**")
+            elif op == "<":      parts.append(f"where {fn} < **{val}**")
+            elif op == "<=":     parts.append(f"where {fn} ≤ **{val}**")
+            elif op == "between" and isinstance(val,list):
+                parts.append(f"where {fn} is between **{val[0]}** and **{val[1]}**")
+            elif op == "in" and isinstance(val,list):
+                parts.append(f"in **{', '.join(str(v) for v in val)}**")
+        return " " + " and ".join(parts) if parts else ""
+
+    fstr = _filter_str()
+
+    # List records
+    if query_type == "list_records":
+        n = len(records or [])
+        if n == 0:
+            return f"No records found{fstr}. Try adjusting your filters."
+        noun = "record" if n == 1 else "records"
+        return f"Found **{n} {noun}**{fstr}. Here they are:"
+
+    if not result:
+        return "Here are the results:"
+
+    rows = result.get("results",[])
+
+    if result.get("error"):
+        return f"Something went wrong: {result['error']}"
+
+    if not rows:
+        return f"No data found{fstr}."
+
+    # Single value (no grouping)
+    if len(rows) == 1 and "value" in rows[0] and not group_by:
+        val = rows[0]["value"]
+        return f"The **{metric}** of **{field}**{fstr} is **{_fmt(val, field)}**."
+
+    # Grouped / ranked
+    if rows and group_by:
+        gb_display = re.sub(r"\w+\((.+)\)", r"\1", group_by).replace("_"," ")
+        sorted_rows = sorted(rows, key=lambda r: r.get("value",0), reverse=(intent.get("order","desc")=="desc"))
+        top  = sorted_rows[0]
+        top_label = _label(top)
+        top_val   = top.get("value",0)
+
+        summary = f"Here's the **{metric} of {field}** by **{gb_display}**{fstr}. "
+        if len(sorted_rows) >= 2:
+            second = sorted_rows[1]
+            summary += (f"**{top_label}** leads with **{_fmt(top_val, field)}**, "
+                        f"followed by **{_label(second)}** with **{_fmt(second.get('value',0), field)}**.")
+        else:
+            summary += f"**{top_label}** has **{_fmt(top_val, field)}**."
+        return summary
+
+    return "Here are the results:"
+
+
+import re
+
+def _history(user_id, chat_id):
+    try:
+        past = get_chat_messages(user_id, chat_id)[-3:]
+        return [{"question": m.get("question",""), "intent": m.get("response",{}).get("intent",{})} for m in past]
+    except: return []
+
 
 @router.post("/query")
 def query_dataset(request: QueryRequest, authorization: str = Header(None)):
     dataset = get_dataset(request.file_id)
-
     if not dataset:
-        raise HTTPException(status_code=404, detail="Dataset not found")
+        raise HTTPException(404, "Dataset not found.")
     if not dataset.get("semantic_mapping"):
-        raise HTTPException(status_code=400, detail="Mapping not generated. Call /mapping first.")
+        raise HTTPException(400, "Mapping not generated. Call /mapping first.")
 
-    # -- 1. PROACTIVE HEALTH CHECK -----------------------------------------
-    if request.question == "__INIT_CHECK__":
-
-        # RACE CONDITION GUARD: data_health key will be absent if this request
-        # fires before /mapping has finished its MongoDB write. Return a sentinel
-        # so the frontend retries instead of falsely reporting "clean".
-        if "data_health" not in dataset:
-            return {
-                "query_type": "text",
-                "result": {"message": "__MAPPING_PENDING__"}
-            }
-
-        health = dataset["data_health"]
-        miss = health.get("missing", {})
-        dups = health.get("duplicates", 0)
-
-        if not miss and dups == 0:
-            return {"query_type": "text", "result": {"message": "OK I've analyzed your data. It looks perfectly clean and ready to explore!"}}
-
-        msg = "Data Health Alert\nI scanned your dataset and found some issues:\n"
-        for k, v in miss.items():
-            msg += f"- `{k}` is missing {v} values.\n"
-        if dups > 0:
-            msg += f"- Found {dups} duplicate rows.\n"
-        msg += "\n*How would you like to handle this?* (e.g. 'Drop duplicates', 'Fill missing prices with average', or 'Ignore and continue')"
-        return {"query_type": "text", "result": {"message": msg}}
-
-    s3_path = dataset["file_path"]
     local_path = None
-    cleaned_path = None
-
     try:
-        # -- 2. Download the file EXACTLY ONCE --------------------------------
-        local_path = get_local_csv(s3_path)
+        local_path = download_from_s3(dataset["file_path"])
         df = pd.read_csv(local_path)
 
-        # -- 3. APPLY CLEANING RULES IN MEMORY (Non-destructive) --------------
-        rules = dataset.get("cleaning_rules", [])
-        if rules:
-            for r in rules:
-                op = r.get("op")
-                f = r.get("field")
-                if op == "drop_duplicates": df.drop_duplicates(inplace=True)
-                elif op == "drop_nulls" and f in df.columns: df.dropna(subset=[f], inplace=True)
-                elif op == "fill_mean" and f in df.columns and pd.api.types.is_numeric_dtype(df[f]): df[f].fillna(df[f].mean(), inplace=True)
-                elif op == "fill_median" and f in df.columns and pd.api.types.is_numeric_dtype(df[f]): df[f].fillna(df[f].median(), inplace=True)
-                elif op == "fill_zero" and f in df.columns: df[f].fillna(0, inplace=True)
+        # Column values for filter resolution
+        col_vals = {}
+        for col, skey in dataset["semantic_mapping"].items():
+            if col in df.columns and df[col].dtype == object:
+                col_vals[skey] = df[col].dropna().unique().tolist()[:50]
 
-            cleaned_path = local_path.replace(".csv", "_cleaned.csv")
-            df.to_csv(cleaned_path, index=False)
-            local_path = cleaned_path
-
-        # -- 4. Extract column values -----------------------------------------
-        column_values = {}
-        for actual_col, semantic_key in dataset["semantic_mapping"].items():
-            if actual_col in df.columns and df[actual_col].dtype == object:
-                column_values[semantic_key] = df[actual_col].dropna().unique().tolist()[:50]
-
-        # -- 5. Fetch Recent Chat History -------------------------------------
-        history_text = "No previous history."
+        # History
+        chat_history = []
+        user_id = None
         if authorization and authorization.startswith("Bearer "):
-            token = authorization.split(" ")[1]
-            user_id = decode_token(token)
+            tok = authorization.split(" ")[1]
+            user_id = decode_token(tok)
             if user_id and request.chat_id:
-                past_messages = get_chat_messages(user_id, request.chat_id)[-4:]
-                if past_messages:
-                    history_lines = []
-                    for msg in past_messages:
-                        history_lines.append(f"User: {msg.get('question')}")
-                        past_intent = msg.get("response", {}).get("intent", {})
-                        history_lines.append(f"AI previously performed action: {past_intent.get('action', 'unknown')} on field: {past_intent.get('field', 'none')} with metric: {past_intent.get('metric', 'none')}")
-                    history_text = "\n".join(history_lines)
+                chat_history = _history(user_id, request.chat_id)
 
-        # -- 6. Extract intent ------------------------------------------------
-        intent = extract_intent(request.question, dataset["semantic_mapping"], column_values, history_text)
-        action = intent.get("action", "aggregate")
+        # Intent
+        if getattr(request, "intent_override", None):
+            intent = request.intent_override
+        else:
+            intent = extract_intent(
+                request.question, dataset["semantic_mapping"],
+                col_vals, chat_history
+            )
 
-        frontend_query_type_map = {
-            "metadata": "metadata",
-            "recommend": "recommendation",
-            "suggest": "suggestion",
-            "list": "list_records",
-            "aggregate": "aggregation",
-            "clean": "text"
-        }
-        frontend_type = frontend_query_type_map.get(action, "aggregation")
-        final_response = None
+        action     = intent.get("action","aggregate")
+        query_type = QUERY_TYPE_MAP.get(action,"aggregation")
+        final: dict
 
-        # -- 7. Route to the correct service ----------------------------------
+        if action == "general":
+            # Pure conversational answer — no data query, just LLM response
+            from app.services.llm_service import call_llm_text
+            answer = call_llm_text(
+                f"""You are a helpful business analyst assistant for small and medium enterprises.
+Answer the following business question clearly and practically. The user is a business owner or manager.
 
-        if action == "clean":
-            rule = intent.get("clean_rule")
-            if rule and rule.get("op"):
-                add_cleaning_rule(request.file_id, rule)
-                final_response = {
-                    "intent": intent,
-                    "query_type": "text",
-                    "result": {"message": f"Data Cleaned! Applied `{rule['op']}` on `{rule['field']}`. Future queries will use the cleaned data. What's next?"}
-                }
-            else:
-                final_response = {"query_type": "text", "result": {"message": "I didn't quite catch how you want to clean it. Try 'Drop duplicates' or 'Fill missing prices with zero'."}}
+Question: "{request.question}"
+
+Provide 4-6 specific, actionable points. Use simple language. Back each point with a brief explanation.
+Format as a flowing response — not just bullet points. Be direct and useful.""",
+                expect_json=False,
+            )
+            final = {"intent": intent, "query_type": "general", "summary": answer}
 
         elif action == "metadata":
-            final_response = {
-                "intent": intent,
-                "query_type": frontend_type,
-                "result": {
-                    "columns": dataset.get("columns", []),
-                    "column_types": dataset.get("column_types", {})
-                }
-            }
+            result = {"columns": dataset.get("columns",[]), "column_types": dataset.get("column_types",{})}
+            summary = "Here's your dataset schema:"
+            final = {"intent": intent, "query_type": query_type, "result": result, "summary": summary}
 
         elif action == "recommend":
-            recommendation = generate_product_recommendation(
-                request.question, local_path, dataset["semantic_mapping"], getattr(request, 'language', 'English'), getattr(request, 'complexity', 'Simple')
-            )
-            final_response = {
-                "intent": intent,
-                "query_type": frontend_type,
-                "recommendation": recommendation
-            }
+            rec = generate_product_recommendation(request.question, local_path, dataset["semantic_mapping"], request.language, request.complexity)
+            top = rec.get("top_pick","")
+            summary = f"Here are your product recommendations. Best long-term pick: **{top}**." if top else "Here are the ranked product recommendations:"
+            final = {"intent": intent, "query_type": query_type, "recommendation": rec, "summary": summary}
 
         elif action == "suggest":
-            result = run_aggregation(local_path, dataset["semantic_mapping"], intent)
-            suggestions = generate_suggestions(
-                request.question, intent, result, getattr(request, 'language', 'English'), getattr(request, 'complexity', 'Simple')
-            )
-            final_response = {
-                "intent": intent,
-                "query_type": frontend_type,
-                "suggestions": suggestions
-            }
+            # Safely run aggregation — if field is missing/invalid, continue with empty result
+            try:
+                result = run_aggregation(local_path, dataset["semantic_mapping"], intent)
+            except Exception as exc:
+                print(f"[QUERY] suggest aggregation failed: {exc}")
+                result = {"results": []}
+            # If aggregation errored (field not found etc.), still generate suggestions from question alone
+            if result.get("error") or not result.get("results"):
+                result = {"results": []}
+            suggestions = generate_suggestions(request.question, intent, result, request.language, request.complexity)
+            summary = _build_summary(request.question, intent, result, "aggregation") if result.get("results") else "Here are AI-powered business recommendations based on your question:"
+            final = {"intent": intent, "query_type": "both" if result.get("results") else "suggestion", "result": result, "suggestions": suggestions, "summary": summary}
 
         elif action == "list":
             records = run_retrieval(local_path, dataset["semantic_mapping"], intent)
-            final_response = {
-                "intent": intent,
-                "query_type": frontend_type,
-                "records": records
-            }
+            summary = _build_summary(request.question, intent, None, "list_records", records)
+            final = {"intent": intent, "query_type": query_type, "records": records, "summary": summary}
 
-        else:  # action == "aggregate"
+        else:  # aggregate
             result = run_aggregation(local_path, dataset["semantic_mapping"], intent)
-            final_response = {
-                "intent": intent,
-                "query_type": frontend_type,
-                "result": result
-            }
+            summary = _build_summary(request.question, intent, result, "aggregation")
+            final = {"intent": intent, "query_type": query_type, "result": result, "summary": summary}
 
-        # -- 8. Save history if logged in -------------------------------------
-        if authorization and authorization.startswith("Bearer "):
-            token = authorization.split(" ")[1]
-            user_id = decode_token(token)
-            if user_id:
-                save_history_entry(user_id, request.file_id, request.chat_id, request.question, final_response)
+        if user_id:
+            save_history_entry(user_id, request.file_id, request.chat_id, request.question, final)
 
-        return final_response
+        return final
 
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Query processing failed: {str(e)}")
-
+    except HTTPException:
+        raise
+    except Exception as exc:
+        import traceback; traceback.print_exc()
+        raise HTTPException(500, f"Query failed: {exc}")
     finally:
-        # -- 9. Clean up EXACTLY ONCE -----------------------------------------
         if local_path and os.path.exists(local_path):
             os.remove(local_path)
-        if cleaned_path and os.path.exists(cleaned_path):
-            os.remove(cleaned_path)
