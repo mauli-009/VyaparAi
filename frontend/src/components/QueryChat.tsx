@@ -26,7 +26,7 @@ interface Message {
   suggestions?: any[];
   recommendation?: any;
   records?: any[];
-  queryType?: "aggregation" | "suggestion" | "recommendation" | "list_records" | "both";
+  queryType?: "aggregation" | "suggestion" | "recommendation" | "list_records" | "both" | "text"; // <-- ADDED "text" HERE
   error?: string;
   loading?: boolean;
 }
@@ -445,7 +445,7 @@ function MessageRow({ msg }: { msg: Message }) {
               <FormattedText text={msg.text} />
             </div>
             {/* Intent pills only make sense for data queries, not general answers */}
-            {msg.intent && msg.queryType !== "general" && <IntentPills intent={msg.intent} />}
+            {msg.intent && msg.queryType !== "text" && <IntentPills intent={msg.intent} />}
             {(msg.queryType === "aggregation" || msg.queryType === "both") && msg.result && (
               <DynamicRenderer msg={msg} />
             )}
