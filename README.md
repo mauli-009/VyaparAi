@@ -94,7 +94,8 @@ User Question
     → resolve_field()         — grounds LLM output against actual semantic fields
     → apply_filters()         — pandas filter engine (equals, between, gt/lt, etc.)
     → run_aggregation()       — sum / avg / count, with time-series grouping
-    → result                  — structured JSON returned to frontend
+    → attach_visualization()  — detects chart type, builds Recharts config
+    → result + chart          — structured JSON + chart config returned to frontend
 ```
 
 ### 3. Robust Dirty Data Handling
@@ -104,6 +105,81 @@ User Question
 
 ### 4. Batch LLM Column Mapping
 All columns are sent to the LLM in a single prompt during the mapping phase — not per-column loops. This prevents semantic drift where distinct columns (e.g., `Total Revenue`, `Total Cost`, `Total Profit`) get incorrectly mapped to the same key.
+
+### 5. Visualization Service — React Charts Integration
+
+Every query response automatically includes a `chart` key with a Recharts-compatible config. The frontend reads this directly to render the right chart component — no extra API call, no client-side chart logic.
+
+**Chart type is auto-detected from the result shape:**
+
+| Result Shape | Chart Type | Example Query |
+|---|---|---|
+| Single scalar value | `stat` card | *"Total revenue this year"* |
+| Multiple rows with `month` key | `line` chart | *"Revenue by month"* |
+| 2–6 categorical items | `pie` chart | *"Sales split by category"* |
+| Multiple rows, any grouping | `bar` chart | *"Top 10 products by sales"* |
+| Empty / error | `none` | — |
+
+**What the service returns:**
+
+```json
+{
+  "results": [
+    { "month": "2024-01", "value": 42300.5 },
+    { "month": "2024-02", "value": 58100.0 }
+  ],
+  "chart": {
+    "type": "line",
+    "data": [
+      { "x": "2024-01", "y": 42300.5 },
+      { "x": "2024-02", "y": 58100.0 }
+    ],
+    "xKey": "x",
+    "yKey": "y",
+    "color": "#7F77DD",
+    "title": "Sum of revenue by Month",
+    "unit": "₹"
+  }
+}
+```
+
+**Frontend wires this directly into Recharts:**
+
+```jsx
+// ResultCard.jsx — simplified
+import { LineChart, Line, XAxis, YAxis, Tooltip } from "recharts";
+
+export function ResultCard({ result }) {
+  const { chart } = result;
+
+  if (chart.type === "line") {
+    return (
+      <LineChart data={chart.data}>
+        <XAxis dataKey={chart.xKey} />
+        <YAxis tickFormatter={(v) => `${chart.unit}${v}`} />
+        <Tooltip />
+        <Line dataKey={chart.yKey} stroke={chart.color} dot={false} />
+      </LineChart>
+    );
+  }
+
+  if (chart.type === "stat") {
+    return (
+      <div className="stat-card">
+        <span className="value">{chart.value}</span>
+        <span className="label">{chart.title}</span>
+      </div>
+    );
+  }
+
+  // bar, pie handled similarly ...
+}
+```
+
+**Additional details:**
+- Unit inference — fields containing `revenue`, `price`, `profit` → `₹`; `rate`, `percent` → `%`; `quantity`, `count` → `units`
+- Large number formatting — `1200000` → `1.20M`, `45000` → `45.0K` for stat cards
+- Color palette is fixed across all chart types for visual consistency
 
 ---
 
@@ -122,6 +198,7 @@ vyapar-ai/
 │   │   ├── ingestion_service.py    # CSV parsing + metadata extraction
 │   │   ├── intent_service.py       # LLM intent extraction + field resolution
 │   │   ├── aggregation_service.py  # pandas aggregation + filter engine
+│   │   ├── visualization_service.py # chart type detection + Recharts config
 │   │   ├── registry_mapping_service.py  # exact/fuzzy/LLM column mapping
 │   │   ├── llm_service.py          # Groq API wrapper
 │   │   └── mapping_service.py      # Internal schema definitions
@@ -274,7 +351,13 @@ Query the dataset in plain English.
     ]
   },
   "result": {
-    "results": [{ "value": 128450.75 }]
+    "results": [{ "value": 128450.75 }],
+    "chart": {
+      "type": "stat",
+      "value": "128.45K",
+      "title": "Sum of revenue",
+      "color": "#7F77DD"
+    }
   }
 }
 ```
@@ -286,6 +369,7 @@ Query the dataset in plain English.
 | Layer | Technology |
 |---|---|
 | **Frontend** | Next.js, Tailwind CSS |
+| **Charts** | Recharts (bar, line, pie, stat) |
 | **Backend** | FastAPI (Python) |
 | **Database** | MongoDB |
 | **LLM** | Groq (Llama 3 / GPT-OSS) |
